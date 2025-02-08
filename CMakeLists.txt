@@ -10,6 +10,7 @@ set(sources_directory ${base_directory}/src)
 set(include_directory ${base_directory}/include)
 set(plugins_directory ${base_directory}/plugins)
 include(${base_directory}/cmake_modules/functions.cmake)
+include_directories(/usr/include/gstreamer-1.0 /usr/include/glib-2.0 /usr/lib/aarch64-linux-gnu/glib-2.0/include/)
 
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${base_directory}/lib)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${base_directory}/bin)
