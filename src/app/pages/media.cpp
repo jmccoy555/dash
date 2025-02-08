@@ -465,7 +465,7 @@ void LocalPlayerTab::populate_dirs(QString path, QListWidget *dirs_widget)
 
 void LocalPlayerTab::populate_tracks(QString path, QListWidget *tracks_widget)
 {
-    QStringList tracks = QDir(path).entryList(QStringList() << "*.mp3", QDir::Files | QDir::Readable);
+    QStringList tracks = QDir(path).entryList(QStringList() << "*.flac" << "*.m4a" << "*.mp3", QDir::Files | QDir::Readable);
     for (QString track : tracks) {
         if (this->player->playlist()->addMedia(QMediaContent(QUrl::fromLocalFile(path + '/' + track)))) {
             TagLib::FileRef f(std::string(path.toStdString() + "/" + track.toStdString()).c_str());
