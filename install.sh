@@ -3,7 +3,7 @@
 #repo addresses
 aasdkRepo="https://github.com/OpenDsh/aasdk"
 gstreamerRepo="https://github.com/GStreamer/qt-gstreamer"
-openautoRepo="https://github.com/openDsh/openauto"
+openautoRepo="https://github.com/jmccoy555/openauto"
 h264bitstreamRepo="https://github.com/aizvorski/h264bitstream"
 pulseaudioRepo="https://gitlab.freedesktop.org/pulseaudio/pulseaudio.git"
 
