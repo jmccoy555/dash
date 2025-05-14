@@ -585,7 +585,8 @@ void CameraPage::connect_local_stream()
 
     DASH_LOG(info) << "[CameraPage] Creating GStreamer pipeline with " << this->config->get_cam_local_device().toStdString();
     std::string pipeline = "v4l2src device=" + this->config->get_cam_local_device().toStdString() +
-                           " ! capsfilter caps=\"video/x-raw,width=" + std::to_string(res.width()) + ",height=" + std::to_string(res.height()) + ";image/jpeg,width=" + std::to_string(res.width()) + ",height=" + std::to_string(res.height()) + "\"" +
+    //commented out for Rock 5B onboard HDMI input, as it outputs BGR3, NV12, NV16 & NV24 and this filteres it out and results in a whitescreen. All working fine wihtough this line. 
+    //                           " ! capsfilter caps=\"video/x-raw,width=" + std::to_string(res.width()) + ",height=" + std::to_string(res.height()) + ";image/jpeg,width=" + std::to_string(res.width()) + ",height=" + std::to_string(res.height()) + "\"" +
                            " ! decodebin";
     init_gstreamer_pipeline(pipeline);
     //emit the connected signal before we resize anything, so that videoContainer has had time to resize to the proper dimensions
