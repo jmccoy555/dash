@@ -7,10 +7,21 @@
 #include <QListWidget>
 #include <QListWidgetItem>
 #include <QMediaPlaylist>
+#include <QMouseEvent>
+#include <QStyle>
 
 #include "app/window.hpp"
 #include "app/pages/media.hpp"
 #include "plugins/radio_plugin.hpp"
+
+void ClickableSlider::mousePressEvent(QMouseEvent *event)
+{
+    if (event->button() == Qt::LeftButton) {
+        setValue(QStyle::sliderValueFromPosition(minimum(), maximum(), event->x(), width()));
+        event->accept();
+    }
+    QSlider::mousePressEvent(event);
+}
 
 MediaPage::MediaPage(Arbiter &arbiter, QWidget *parent)
     : QTabWidget(parent)
@@ -24,6 +35,7 @@ void MediaPage::init()
     this->addTab(new RadioPlayerTab(this->arbiter, this), "Radio");
     this->addTab(new BluetoothPlayerTab(this->arbiter, this), "Bluetooth");
     this->addTab(new LocalPlayerTab(this->arbiter, this), "Local");
+    this->addTab(new DashcamTab(this->arbiter, this), "Dashcam");
 }
 
 BluetoothPlayerTab::BluetoothPlayerTab(Arbiter &arbiter, QWidget *parent)
@@ -299,6 +311,12 @@ LocalPlayerTab::LocalPlayerTab(Arbiter &arbiter, QWidget *parent)
     this->player = new QMediaPlayer(this);
     this->player->setPlaylist(playlist);
 
+    // Registers with AAHandler so AA starting playback can pause this (and
+    // this starting playback can pause AA) - see controls_widget() and
+    // AAHandler::mediaPlaybackUpdate. Physical media buttons also check
+    // active_media_source there to decide whether to route to AA or here.
+    this->arbiter.android_auto().handler->local_player = this->player;
+
     this->path_label = new QLabel(this->config->get_media_home(), this);
 
     QVBoxLayout *layout = new QVBoxLayout(this);
@@ -335,6 +353,15 @@ QWidget *LocalPlayerTab::playlist_widget()
     Session::Forge::to_touch_scroller(tracks);
     this->populate_tracks(root_path, tracks);
     connect(tracks, &QListWidget::itemClicked, [tracks, player = this->player](QListWidgetItem *item) {
+        // Only touches the active playlist here, when a track is actually
+        // chosen to play - browsing folders (below) no longer clears or
+        // rebuilds it, so navigating to another folder to see what's in it
+        // doesn't stop whatever's currently playing (see conversation).
+        // Rebuilt from what's currently displayed so next/prev still walk
+        // through this folder's tracks in order.
+        player->playlist()->clear();
+        for (int i = 0; i < tracks->count(); ++i)
+            player->playlist()->addMedia(QMediaContent(QUrl::fromLocalFile(tracks->item(i)->data(Qt::UserRole).toString())));
         player->playlist()->setCurrentIndex(tracks->row(item));
         player->play();
     });
@@ -345,8 +372,6 @@ QWidget *LocalPlayerTab::playlist_widget()
     connect(folders, &QListWidget::itemClicked, [this, folders, tracks, home_button](QListWidgetItem *item) {
         if (!item->isSelected()) return;
 
-        tracks->clear();
-        this->player->playlist()->clear();
         QString current_path(item->data(Qt::UserRole).toString());
         this->path_label->setText(current_path);
         this->populate_tracks(current_path, tracks);
@@ -364,7 +389,7 @@ QWidget *LocalPlayerTab::seek_widget()
     QWidget *widget = new QWidget(this);
     QHBoxLayout *layout = new QHBoxLayout(widget);
 
-    QSlider *slider = new QSlider(Qt::Orientation::Horizontal, widget);
+    ClickableSlider *slider = new ClickableSlider(Qt::Orientation::Horizontal, widget);
     slider->setTracking(false);
     slider->setRange(0, 0);
     QLabel *value = new QLabel(LocalPlayerTab::durationFmt(slider->value()), widget);
@@ -419,7 +444,17 @@ QWidget *LocalPlayerTab::controls_widget()
             player->pause();
     });
     connect(this->player, &QMediaPlayer::stateChanged,
-            [play_button](QMediaPlayer::State state) { play_button->setChecked(state == QMediaPlayer::PlayingState); });
+            [play_button, aa_handler = this->arbiter.android_auto().handler](QMediaPlayer::State state) {
+                play_button->setChecked(state == QMediaPlayer::PlayingState);
+                // Claim media focus and pause AA whenever this actually
+                // starts playing, regardless of which button/track-click
+                // triggered it - one central point instead of duplicating
+                // this in every place that calls player->play().
+                if (state == QMediaPlayer::PlayingState) {
+                    aa_handler->active_media_source = AAHandler::ActiveMediaSource::Local;
+                    aa_handler->injectButtonPressHelper(aasdk::proto::enums::ButtonCode::PAUSE, Action::ActionState::Triggered);
+                }
+            });
     layout->addWidget(play_button);
 
     QPushButton *forward_button = new QPushButton(widget);
@@ -465,17 +500,142 @@ void LocalPlayerTab::populate_dirs(QString path, QListWidget *dirs_widget)
 
 void LocalPlayerTab::populate_tracks(QString path, QListWidget *tracks_widget)
 {
+    // Just populates the browseable list - doesn't touch the active
+    // playlist (see the tracks itemClicked handler in playlist_widget(),
+    // which is the only place that now does).
+    tracks_widget->clear();
     QStringList tracks = QDir(path).entryList(QStringList() << "*.flac" << "*.m4a" << "*.mp3", QDir::Files | QDir::Readable);
     for (QString track : tracks) {
-        if (this->player->playlist()->addMedia(QMediaContent(QUrl::fromLocalFile(path + '/' + track)))) {
-            TagLib::FileRef f(std::string(path.toStdString() + "/" + track.toStdString()).c_str());
-            if (!f.isNull() && f.tag()) {
-                TagLib::Tag *tag = f.tag();
-                tag->title();
-            }
-            int lastPoint = track.lastIndexOf(".");
-            QString fileNameNoExt = track.left(lastPoint);
-            new QListWidgetItem(fileNameNoExt, tracks_widget);
-        }
+        int lastPoint = track.lastIndexOf(".");
+        QString fileNameNoExt = track.left(lastPoint);
+        QListWidgetItem *item = new QListWidgetItem(fileNameNoExt, tracks_widget);
+        item->setData(Qt::UserRole, QVariant(path + '/' + track));
     }
+}
+
+DashcamVideoView::DashcamVideoView(QGraphicsScene *scene, QGraphicsVideoItem *item, QWidget *parent)
+    : QGraphicsView(scene, parent)
+    , item(item)
+{
+    this->setFrameShape(QFrame::NoFrame);
+    this->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    this->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    this->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+}
+
+void DashcamVideoView::resizeEvent(QResizeEvent *event)
+{
+    QGraphicsView::resizeEvent(event);
+    // KeepAspectRatioByExpanding rather than KeepAspectRatio - a dashcam
+    // review view should fill the space it's given (cropping any overflow)
+    // rather than letterbox, which is what "not taking the full window" was
+    // asking for.
+    this->fitInView(this->item, Qt::KeepAspectRatioByExpanding);
+}
+
+const QString DashcamTab::FOOTAGE_DIR = "/home/dash/dashcam-footage";
+
+DashcamTab::DashcamTab(Arbiter &arbiter, QWidget *parent)
+    : QWidget(parent)
+    , arbiter(arbiter)
+{
+    this->player = new QMediaPlayer(this);
+    this->video_item = new QGraphicsVideoItem();
+    this->video_scene = new QGraphicsScene(this);
+    this->video_scene->setBackgroundBrush(Qt::black);
+    this->video_scene->addItem(this->video_item);
+    this->video_widget = new DashcamVideoView(this->video_scene, this->video_item, this);
+    this->player->setVideoOutput(this->video_item);
+
+    connect(this->player, &QMediaPlayer::videoAvailableChanged, this->video_widget, [this](bool) {
+        this->video_widget->fitInView(this->video_item, Qt::KeepAspectRatioByExpanding);
+    });
+
+    QVBoxLayout *layout = new QVBoxLayout(this);
+    layout->addWidget(this->video_widget, 3);
+    layout->addWidget(this->clips_widget(), 2);
+    layout->addWidget(this->seek_widget());
+    layout->addWidget(this->controls_widget());
+}
+
+QWidget *DashcamTab::clips_widget()
+{
+    QListWidget *clips = new QListWidget(this);
+    Session::Forge::to_touch_scroller(clips);
+    this->populate_clips(clips);
+
+    connect(clips, &QListWidget::itemClicked, [this](QListWidgetItem *item) {
+        QString path = item->data(Qt::UserRole).toString();
+        this->player->setMedia(QMediaContent(QUrl::fromLocalFile(path)));
+        this->player->play();
+    });
+
+    return clips;
+}
+
+void DashcamTab::populate_clips(QListWidget *clips_widget)
+{
+    // Dashcam records continuously (see dash-extras/dashcam/) - newest
+    // first, since that's almost always what you actually want to review.
+    QFileInfoList clips = QDir(DashcamTab::FOOTAGE_DIR).entryInfoList(QStringList() << "dashcam_*.mp4", QDir::Files | QDir::Readable, QDir::Time);
+    for (const QFileInfo &clip : clips) {
+        QListWidgetItem *item = new QListWidgetItem(clip.fileName(), clips_widget);
+        item->setData(Qt::UserRole, QVariant(clip.absoluteFilePath()));
+    }
+}
+
+QWidget *DashcamTab::seek_widget()
+{
+    QWidget *widget = new QWidget(this);
+    QHBoxLayout *layout = new QHBoxLayout(widget);
+
+    ClickableSlider *slider = new ClickableSlider(Qt::Orientation::Horizontal, widget);
+    slider->setTracking(false);
+    slider->setRange(0, 0);
+    QLabel *value = new QLabel(LocalPlayerTab::durationFmt(slider->value()), widget);
+    connect(slider, &QSlider::sliderReleased,
+            [player = this->player, slider]() { player->setPosition(slider->sliderPosition()); });
+    connect(slider, &QSlider::sliderMoved,
+            [value](int position) { value->setText(LocalPlayerTab::durationFmt(position)); });
+    connect(this->player, &QMediaPlayer::durationChanged, [slider](qint64 duration) {
+        slider->setValue(0);
+        slider->setRange(0, duration);
+    });
+    connect(this->player, &QMediaPlayer::positionChanged, [slider, value](qint64 position) {
+        if (!slider->isSliderDown()) {
+            slider->setValue(position);
+            value->setText(LocalPlayerTab::durationFmt(position));
+        }
+    });
+
+    layout->addStretch(4);
+    layout->addWidget(slider, 28);
+    layout->addWidget(value, 3);
+    layout->addStretch(1);
+
+    return widget;
+}
+
+QWidget *DashcamTab::controls_widget()
+{
+    QWidget *widget = new QWidget(this);
+    QHBoxLayout *layout = new QHBoxLayout(widget);
+
+    QPushButton *play_button = new QPushButton(widget);
+    play_button->setFlat(true);
+    play_button->setCheckable(true);
+    play_button->setChecked(false);
+    this->arbiter.forge().iconize("play", "pause", play_button, 56);
+    connect(play_button, &QPushButton::clicked, [player = this->player, play_button](bool checked = false) {
+        play_button->setChecked(!checked);
+        if (checked)
+            player->play();
+        else
+            player->pause();
+    });
+    connect(this->player, &QMediaPlayer::stateChanged,
+            [play_button](QMediaPlayer::State state) { play_button->setChecked(state == QMediaPlayer::PlayingState); });
+    layout->addWidget(play_button);
+
+    return widget;
 }

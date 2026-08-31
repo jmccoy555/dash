@@ -544,7 +544,6 @@ GstPadProbeReturn CameraPage::convertProbe(GstPad *pad, GstPadProbeInfo *info, v
             return GST_PAD_PROBE_REMOVE;
         }
     }
-
     return GST_PAD_PROBE_OK;
 }
 
@@ -584,11 +583,57 @@ void CameraPage::connect_local_stream()
     QSize res = this->choose_video_resolution();
 
     DASH_LOG(info) << "[CameraPage] Creating GStreamer pipeline with " << this->config->get_cam_local_device().toStdString();
+
+    /////////////////////
+// original 
+    // std::string pipeline = "v4l2src device=" + this->config->get_cam_local_device().toStdString() +
+    //                        " ! capsfilter caps=\"video/x-raw,width=" + std::to_string(res.width()) + ",height=" + std::to_string(res.height()) + ";image/jpeg,width=" + std::to_string(res.width()) + ",height=" + std::to_string(res.height()) + "\"" +
+    //                        " ! decodebin";
+
+    // std::string pipeline = "v4l2src device=" + this->config->get_cam_local_device().toStdString() +
+    //                        " ! capsfilter caps=\"video/x-raw,width=" + std::to_string(res.width()) + ",height=" + std::to_string(res.height()) + "; image/jpeg,width=" + std::to_string(res.width()) + ",height=" + std::to_string(res.height()) + "\"" +
+    //                        " ! decodebin ! videoconvert ! autovideosink sync=false";
+// white screen without autovideosink
+    
+    // works
+    // std::string pipeline = "v4l2src device=/dev/video0 ! video/x-raw,framerate=15/1 ! videoconvert ! autovideosink sync=false";
+
+    // std::string pipeline = "v4l2src device=" + this->config->get_cam_local_device().toStdString() +
+    //                     //    " ! capsfilter caps=\"video/x-raw,width=" + std::to_string(res.width()) + ",height=" + std::to_string(res.height()) + "; image/jpeg,width=" + std::to_string(res.width()) + ",height=" + std::to_string(res.height()) + "\"" +
+    //                        " ! decodebin"; // ! videoconvert"; // ! autovideosink sync=false";
+
+    // NOTE: rk_hdmirx ignores this framerate hint (always delivers ~60fps
+    // regardless), but that turned out to be a red herring for the camera's
+    // real problem: a measured >500ms lag between real motion and what's
+    // on screen. Instrumented the actual pipeline with wall-clock probes
+    // and ruled out software entirely - v4l2src through videoconvert to
+    // the sink transits in ~0ms, and neither disabling the KWin compositor
+    // nor Mesa's vblank_mode=0 nor raising the real delivered framerate
+    // (via a v4l2src pad probe dropping buffers, since videorate doesn't
+    // drop anything against this source) moved the lag at all. The camera
+    // is an analog unit through a USB-powered analog-to-HDMI converter box
+    // - rk_hdmirx (fdee0000.hdmirx-controller) is the SoC's own HDMI RX
+    // peripheral, and the converter has no USB data interface to inspect,
+    // so its internal buffering is a black box outside Linux's control.
+    // That's almost certainly where the delay actually is. A real fix
+    // means a lower-latency capture/converter box, not a software change
+    // here - see git history for the diagnostic probes if revisiting.
+    // Some devices (e.g. the Anker PowerConf webcam) only offer raw video
+    // at low resolutions and require MJPEG at their higher/default ones -
+    // forcing video/x-raw only made caps negotiation fail outright (white
+    // screen, no error). Offering both lets each device negotiate whichever
+    // it actually supports; decodebin autoplugs a jpeg decoder when MJPEG
+    // is what gets negotiated. Also dropped the framerate=10/1 hint that
+    // used to sit here - proven meaningless for rk_hdmirx (which ignores it
+    // and always delivers ~60fps regardless) and it outright breaks
+    // negotiation on devices like the Anker that don't offer 10fps at all.
+    // This also covers the Rock 5B onboard HDMI input's own whitescreen -
+    // it outputs BGR3/NV12/NV16/NV24, none of which a width/height-pinned
+    // video/x-raw capsfilter would have accepted either.
     std::string pipeline = "v4l2src device=" + this->config->get_cam_local_device().toStdString() +
-    //commented out for Rock 5B onboard HDMI input, as it outputs BGR3, NV12, NV16 & NV24 and this filteres it out and results in a whitescreen. All working fine wihtough this line. 
-    //                           " ! capsfilter caps=\"video/x-raw,width=" + std::to_string(res.width()) + ",height=" + std::to_string(res.height()) + ";image/jpeg,width=" + std::to_string(res.width()) + ",height=" + std::to_string(res.height()) + "\"" +
-                           " ! decodebin";
+                           " ! video/x-raw;image/jpeg ! decodebin";
     init_gstreamer_pipeline(pipeline);
+
     //emit the connected signal before we resize anything, so that videoContainer has had time to resize to the proper dimensions
     emit connected_local();
     if (videoContainer_ == nullptr) {

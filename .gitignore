@@ -68,3 +68,10 @@ openauto.ini
 plugins/vehicle/*
 !plugins/vehicle/test
 !plugins/vehicle/README.md
+
+# Build-time dependencies cloned directly into the tree (no .gitmodules
+# mapping - these aren't real submodules, just cloned here by the build)
+/aasdk
+/openauto
+/qt-gstreamer
+/h264bitstream

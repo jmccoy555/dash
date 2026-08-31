@@ -4,6 +4,7 @@
 #include <QFile>
 #include <QFontDatabase>
 #include <QHBoxLayout>
+#include <QMediaPlaylist>
 #include <QProcess>
 #include <QPushButton>
 #include <QRegularExpression>
@@ -228,9 +229,15 @@ Session::System::System(QSettings &settings, Arbiter &arbiter)
     , server(arbiter)
     , bluetooth(arbiter)
     , brightness(settings)
-    , volume(settings.value("System/volume", 50).toUInt())
+    , volume(Session::System::get_current_volume())
 {
-    this->set_volume();
+    // Deliberately doesn't call set_volume() here (see conversation) - the
+    // old code force-wrote a saved System/volume setting to amixer on every
+    // startup regardless of wherever the physical rotary encoder had
+    // actually left it, causing the volume to unexpectedly jump on every
+    // restart. Reading the live value instead keeps the on-screen slider
+    // and the knob in sync with reality rather than a stale preference.
+    settings.setValue("System/volume", this->volume);
 }
 
 void Session::System::set_volume() const
@@ -238,6 +245,29 @@ void Session::System::set_volume() const
     auto process = new QProcess();
     process->start(QString(VOLUME_CMD).arg(this->volume));
     process->waitForFinished();
+}
+
+uint8_t Session::System::get_current_volume()
+{
+    QProcess process;
+    process.start("amixer", {"get", "Master"});
+    process.waitForFinished();
+    QString output = QString::fromUtf8(process.readAllStandardOutput());
+    for (const QString &line : output.split('\n')) {
+        if (!line.contains("Front Left:") && !line.contains("Mono:"))
+            continue;
+        for (const QString &word : line.split(' ', QString::SkipEmptyParts)) {
+            if (word.contains('%')) {
+                QString digits = word;
+                digits.remove('[').remove(']').remove('%');
+                bool ok = false;
+                uint value = digits.toUInt(&ok);
+                if (ok)
+                    return static_cast<uint8_t>(value);
+            }
+        }
+    }
+    return 50;
 }
 
 QFrame *Session::Forge::br(bool vertical)
@@ -396,11 +426,67 @@ Session::Core::Core(QSettings &settings, Arbiter &arbiter)
         new Action("Android Auto Home", [&arbiter, aa_handler](Action::ActionState actionState){ aa_handler->injectButtonPressHelper(aasdk::proto::enums::ButtonCode::HOME, actionState); }, arbiter.window()),
         new Action("Android Auto Phone", [&arbiter, aa_handler](Action::ActionState actionState){ aa_handler->injectButtonPressHelper(aasdk::proto::enums::ButtonCode::PHONE, actionState); }, arbiter.window()),
         new Action("Android Auto Call End", [&arbiter, aa_handler](Action::ActionState actionState){ aa_handler->injectButtonPressHelper(aasdk::proto::enums::ButtonCode::CALL_END, actionState); }, arbiter.window()),
-        new Action("Android Auto Play", [&arbiter, aa_handler](Action::ActionState actionState){ aa_handler->injectButtonPressHelper(aasdk::proto::enums::ButtonCode::PLAY, actionState); }, arbiter.window()),
-        new Action("Android Auto Pause", [&arbiter, aa_handler](Action::ActionState actionState){ aa_handler->injectButtonPressHelper(aasdk::proto::enums::ButtonCode::PAUSE, actionState); }, arbiter.window()),
-        new Action("Android Auto Prev Track", [&arbiter, aa_handler](Action::ActionState actionState){ aa_handler->injectButtonPressHelper(aasdk::proto::enums::ButtonCode::PREV, actionState); }, arbiter.window()),
-        new Action("Android Auto Next Track", [&arbiter, aa_handler](Action::ActionState actionState){ aa_handler->injectButtonPressHelper(aasdk::proto::enums::ButtonCode::NEXT, actionState); }, arbiter.window()),
-        new Action("Android Auto Toggle Play", [&arbiter, aa_handler](Action::ActionState actionState){ aa_handler->injectButtonPressHelper(aasdk::proto::enums::ButtonCode::TOGGLE_PLAY, actionState); }, arbiter.window()),
+        // These route to whichever of AA or the dash's own Local player
+        // last actually started playing (see AAHandler::active_media_source
+        // and conversation - physical buttons used to always hit AA even
+        // while Local was the one actually playing).
+        // Local-media branch only acts on Activated/Triggered (press, or a
+        // QShortcut's single fire) - GPIO buttons send both Activated (press)
+        // and Deactivated (release) through this same callback, and without
+        // this guard each physical press/release pair ran the action twice
+        // (visibly broken for Prev/Next, which then skipped two tracks -
+        // Play/Pause/Toggle happened to tolerate it since calling them twice
+        // is a no-op). The AA passthrough branch still forwards every
+        // actionState unfiltered - AA's own button protocol distinguishes
+        // press from release.
+        new Action("Android Auto Play", [&arbiter, aa_handler](Action::ActionState actionState){
+            if (aa_handler->active_media_source == AAHandler::ActiveMediaSource::Local && aa_handler->local_player != nullptr) {
+                if (actionState == Action::ActionState::Activated || actionState == Action::ActionState::Triggered)
+                    aa_handler->local_player->play();
+            }
+            else
+                aa_handler->injectButtonPressHelper(aasdk::proto::enums::ButtonCode::PLAY, actionState);
+        }, arbiter.window()),
+        new Action("Android Auto Pause", [&arbiter, aa_handler](Action::ActionState actionState){
+            if (aa_handler->active_media_source == AAHandler::ActiveMediaSource::Local && aa_handler->local_player != nullptr) {
+                if (actionState == Action::ActionState::Activated || actionState == Action::ActionState::Triggered)
+                    aa_handler->local_player->pause();
+            }
+            else
+                aa_handler->injectButtonPressHelper(aasdk::proto::enums::ButtonCode::PAUSE, actionState);
+        }, arbiter.window()),
+        new Action("Android Auto Prev Track", [&arbiter, aa_handler](Action::ActionState actionState){
+            if (aa_handler->active_media_source == AAHandler::ActiveMediaSource::Local && aa_handler->local_player != nullptr) {
+                if (actionState == Action::ActionState::Activated || actionState == Action::ActionState::Triggered) {
+                    aa_handler->local_player->playlist()->previous();
+                    aa_handler->local_player->play();
+                }
+            }
+            else
+                aa_handler->injectButtonPressHelper(aasdk::proto::enums::ButtonCode::PREV, actionState);
+        }, arbiter.window()),
+        new Action("Android Auto Next Track", [&arbiter, aa_handler](Action::ActionState actionState){
+            if (aa_handler->active_media_source == AAHandler::ActiveMediaSource::Local && aa_handler->local_player != nullptr) {
+                if (actionState == Action::ActionState::Activated || actionState == Action::ActionState::Triggered) {
+                    aa_handler->local_player->playlist()->next();
+                    aa_handler->local_player->play();
+                }
+            }
+            else
+                aa_handler->injectButtonPressHelper(aasdk::proto::enums::ButtonCode::NEXT, actionState);
+        }, arbiter.window()),
+        new Action("Android Auto Toggle Play", [&arbiter, aa_handler](Action::ActionState actionState){
+            if (aa_handler->active_media_source == AAHandler::ActiveMediaSource::Local && aa_handler->local_player != nullptr) {
+                if (actionState == Action::ActionState::Activated || actionState == Action::ActionState::Triggered) {
+                    if (aa_handler->local_player->state() == QMediaPlayer::PlayingState)
+                        aa_handler->local_player->pause();
+                    else
+                        aa_handler->local_player->play();
+                }
+            }
+            else
+                aa_handler->injectButtonPressHelper(aasdk::proto::enums::ButtonCode::TOGGLE_PLAY, actionState);
+        }, arbiter.window()),
         new Action("Android Auto Voice", [&arbiter, aa_handler](Action::ActionState actionState){ aa_handler->injectButtonPressHelper(aasdk::proto::enums::ButtonCode::MICROPHONE_1, actionState); }, arbiter.window()),
         new Action("Android Auto Scroll Up", [&arbiter, aa_handler](Action::ActionState actionState){ if(actionState == Action::ActionState::Activated || actionState == Action::ActionState::Triggered) aa_handler->injectButtonPress(aasdk::proto::enums::ButtonCode::SCROLL_WHEEL, openauto::projection::WheelDirection::RIGHT); }, arbiter.window()),
         new Action("Android Auto Scroll Down", [&arbiter, aa_handler](Action::ActionState actionState){ if(actionState == Action::ActionState::Activated || actionState == Action::ActionState::Triggered) aa_handler->injectButtonPress(aasdk::proto::enums::ButtonCode::SCROLL_WHEEL, openauto::projection::WheelDirection::LEFT); }, arbiter.window()),

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <QMediaPlayer>
+
 #include "openauto/Service/IAndroidAutoInterface.hpp"
 #include "app/action.hpp"
 
@@ -15,6 +17,15 @@ class AAHandler : public QObject, public openauto::service::IAndroidAutoInterfac
     void navigationTurnEvent(const aasdk::proto::messages::NavigationTurnEvent& turnEvent) override;
     void navigationDistanceEvent(const aasdk::proto::messages::NavigationDistanceEvent& distanceEvent) override;
     void injectButtonPressHelper(aasdk::proto::enums::ButtonCode::Enum buttonCode, Action::ActionState actionState);
+
+    // Media focus: physical play/pause/skip buttons should control whichever
+    // of AA or the dash's own Local player last actually started playing,
+    // not always AA regardless (see conversation - that's what caused both
+    // to play over each other). local_player is null until LocalPlayerTab
+    // registers itself; AA is assumed active until Local claims focus.
+    enum class ActiveMediaSource { AndroidAuto, Local };
+    ActiveMediaSource active_media_source = ActiveMediaSource::AndroidAuto;
+    QMediaPlayer *local_player = nullptr;
 
    private:
 

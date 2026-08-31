@@ -151,6 +151,14 @@ class Session {
 
         System(QSettings &settings, Arbiter &arbiter);
         void set_volume() const;
+
+       private:
+        // Reads the actual live ALSA volume rather than trusting a saved
+        // setting - see the constructor and conversation: force-writing a
+        // stale saved value to amixer on every startup regardless of
+        // wherever the physical rotary encoder had actually left it is
+        // what caused the volume to unexpectedly jump on every restart.
+        static uint8_t get_current_volume();
     };
 
     struct Forge {
