@@ -31,6 +31,11 @@ void AAHandler::injectButtonPressHelper(aasdk::proto::enums::ButtonCode::Enum bu
 
 void AAHandler::mediaPlaybackUpdate(const aasdk::proto::messages::MediaInfoChannelPlaybackData& playback)
 {
+    if (playback.playback_state() == aasdk::proto::messages::MediaInfoChannelPlaybackData::PLAY) {
+        this->active_media_source = ActiveMediaSource::AndroidAuto;
+        if (this->local_player != nullptr)
+            this->local_player->pause();
+    }
     emit aa_media_playback_update(playback);
 }
 

@@ -299,6 +299,12 @@ LocalPlayerTab::LocalPlayerTab(Arbiter &arbiter, QWidget *parent)
     this->player = new QMediaPlayer(this);
     this->player->setPlaylist(playlist);
 
+    // Registers with AAHandler so AA starting playback can pause this (and
+    // this starting playback can pause AA) - see controls_widget() and
+    // AAHandler::mediaPlaybackUpdate. Physical media buttons also check
+    // active_media_source there to decide whether to route to AA or here.
+    this->arbiter.android_auto().handler->local_player = this->player;
+
     this->path_label = new QLabel(this->config->get_media_home(), this);
 
     QVBoxLayout *layout = new QVBoxLayout(this);
@@ -419,7 +425,17 @@ QWidget *LocalPlayerTab::controls_widget()
             player->pause();
     });
     connect(this->player, &QMediaPlayer::stateChanged,
-            [play_button](QMediaPlayer::State state) { play_button->setChecked(state == QMediaPlayer::PlayingState); });
+            [play_button, aa_handler = this->arbiter.android_auto().handler](QMediaPlayer::State state) {
+                play_button->setChecked(state == QMediaPlayer::PlayingState);
+                // Claim media focus and pause AA whenever this actually
+                // starts playing, regardless of which button/track-click
+                // triggered it - one central point instead of duplicating
+                // this in every place that calls player->play().
+                if (state == QMediaPlayer::PlayingState) {
+                    aa_handler->active_media_source = AAHandler::ActiveMediaSource::Local;
+                    aa_handler->injectButtonPressHelper(aasdk::proto::enums::ButtonCode::PAUSE, Action::ActionState::Triggered);
+                }
+            });
     layout->addWidget(play_button);
 
     QPushButton *forward_button = new QPushButton(widget);
