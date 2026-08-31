@@ -228,9 +228,15 @@ Session::System::System(QSettings &settings, Arbiter &arbiter)
     , server(arbiter)
     , bluetooth(arbiter)
     , brightness(settings)
-    , volume(settings.value("System/volume", 50).toUInt())
+    , volume(Session::System::get_current_volume())
 {
-    this->set_volume();
+    // Deliberately doesn't call set_volume() here - the old code force-wrote
+    // a saved System/volume setting to amixer on every startup regardless
+    // of wherever the physical volume control had actually left it, causing
+    // the volume to unexpectedly jump on every restart. Reading the live
+    // value instead keeps the on-screen slider
+    // and the knob in sync with reality rather than a stale preference.
+    settings.setValue("System/volume", this->volume);
 }
 
 void Session::System::set_volume() const
@@ -238,6 +244,29 @@ void Session::System::set_volume() const
     auto process = new QProcess();
     process->start(QString(VOLUME_CMD).arg(this->volume));
     process->waitForFinished();
+}
+
+uint8_t Session::System::get_current_volume()
+{
+    QProcess process;
+    process.start("amixer", {"get", "Master"});
+    process.waitForFinished();
+    QString output = QString::fromUtf8(process.readAllStandardOutput());
+    for (const QString &line : output.split('\n')) {
+        if (!line.contains("Front Left:") && !line.contains("Mono:"))
+            continue;
+        for (const QString &word : line.split(' ', QString::SkipEmptyParts)) {
+            if (word.contains('%')) {
+                QString digits = word;
+                digits.remove('[').remove(']').remove('%');
+                bool ok = false;
+                uint value = digits.toUInt(&ok);
+                if (ok)
+                    return static_cast<uint8_t>(value);
+            }
+        }
+    }
+    return 50;
 }
 
 QFrame *Session::Forge::br(bool vertical)
