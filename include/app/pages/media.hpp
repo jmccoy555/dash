@@ -14,6 +14,20 @@
 
 class Arbiter;
 
+// Plain QSlider only nudges by a page-step when you click/tap the groove
+// rather than jumping to that position - drag-to-seek still works, but a
+// single tap (the natural touchscreen gesture) barely moves it, which is
+// what "no way to scrub" actually was. Jumps straight to the tapped spot.
+class ClickableSlider : public QSlider {
+    Q_OBJECT
+
+   public:
+    using QSlider::QSlider;
+
+   protected:
+    void mousePressEvent(QMouseEvent *event) override;
+};
+
 class MediaPage : public QTabWidget, public Page {
     Q_OBJECT
 

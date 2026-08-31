@@ -1,5 +1,6 @@
 #include <QApplication>
 #include <QDir>
+#include <QStandardPaths>
 
 #include "app/config.hpp"
 
@@ -12,7 +13,7 @@ Config::Config()
     this->radio_station = this->settings.value("Pages/Media/Radio/station", 98.0).toDouble();
     this->radio_muted = this->settings.value("Pages/Media/Radio/muted", true).toBool();
     this->radio_plugin = this->settings.value("Pages/Media/Radio/plugin", "unloader").toString();
-    this->media_home = this->settings.value("Pages/Media/Local/home", QDir().absolutePath()).toString();
+    this->media_home = this->settings.value("Pages/Media/Local/home", QStandardPaths::writableLocation(QStandardPaths::MusicLocation)).toString();
     this->si_units = this->settings.value("Pages/Vehicle/si_units", false).toBool();
     // 0 - SocketCAN
     // 1 - Elm 327 USB

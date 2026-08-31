@@ -7,10 +7,21 @@
 #include <QListWidget>
 #include <QListWidgetItem>
 #include <QMediaPlaylist>
+#include <QMouseEvent>
+#include <QStyle>
 
 #include "app/window.hpp"
 #include "app/pages/media.hpp"
 #include "plugins/radio_plugin.hpp"
+
+void ClickableSlider::mousePressEvent(QMouseEvent *event)
+{
+    if (event->button() == Qt::LeftButton) {
+        setValue(QStyle::sliderValueFromPosition(minimum(), maximum(), event->x(), width()));
+        event->accept();
+    }
+    QSlider::mousePressEvent(event);
+}
 
 MediaPage::MediaPage(Arbiter &arbiter, QWidget *parent)
     : QTabWidget(parent)
@@ -335,6 +346,15 @@ QWidget *LocalPlayerTab::playlist_widget()
     Session::Forge::to_touch_scroller(tracks);
     this->populate_tracks(root_path, tracks);
     connect(tracks, &QListWidget::itemClicked, [tracks, player = this->player](QListWidgetItem *item) {
+        // Only touches the active playlist here, when a track is actually
+        // chosen to play - browsing folders (below) no longer clears or
+        // rebuilds it, so navigating to another folder to see what's in it
+        // doesn't stop whatever's currently playing (see conversation).
+        // Rebuilt from what's currently displayed so next/prev still walk
+        // through this folder's tracks in order.
+        player->playlist()->clear();
+        for (int i = 0; i < tracks->count(); ++i)
+            player->playlist()->addMedia(QMediaContent(QUrl::fromLocalFile(tracks->item(i)->data(Qt::UserRole).toString())));
         player->playlist()->setCurrentIndex(tracks->row(item));
         player->play();
     });
@@ -345,8 +365,6 @@ QWidget *LocalPlayerTab::playlist_widget()
     connect(folders, &QListWidget::itemClicked, [this, folders, tracks, home_button](QListWidgetItem *item) {
         if (!item->isSelected()) return;
 
-        tracks->clear();
-        this->player->playlist()->clear();
         QString current_path(item->data(Qt::UserRole).toString());
         this->path_label->setText(current_path);
         this->populate_tracks(current_path, tracks);
@@ -364,7 +382,7 @@ QWidget *LocalPlayerTab::seek_widget()
     QWidget *widget = new QWidget(this);
     QHBoxLayout *layout = new QHBoxLayout(widget);
 
-    QSlider *slider = new QSlider(Qt::Orientation::Horizontal, widget);
+    ClickableSlider *slider = new ClickableSlider(Qt::Orientation::Horizontal, widget);
     slider->setTracking(false);
     slider->setRange(0, 0);
     QLabel *value = new QLabel(LocalPlayerTab::durationFmt(slider->value()), widget);
@@ -465,17 +483,15 @@ void LocalPlayerTab::populate_dirs(QString path, QListWidget *dirs_widget)
 
 void LocalPlayerTab::populate_tracks(QString path, QListWidget *tracks_widget)
 {
+    // Just populates the browseable list - doesn't touch the active
+    // playlist (see the tracks itemClicked handler in playlist_widget(),
+    // which is the only place that now does).
+    tracks_widget->clear();
     QStringList tracks = QDir(path).entryList(QStringList() << "*.mp3", QDir::Files | QDir::Readable);
     for (QString track : tracks) {
-        if (this->player->playlist()->addMedia(QMediaContent(QUrl::fromLocalFile(path + '/' + track)))) {
-            TagLib::FileRef f(std::string(path.toStdString() + "/" + track.toStdString()).c_str());
-            if (!f.isNull() && f.tag()) {
-                TagLib::Tag *tag = f.tag();
-                tag->title();
-            }
-            int lastPoint = track.lastIndexOf(".");
-            QString fileNameNoExt = track.left(lastPoint);
-            new QListWidgetItem(fileNameNoExt, tracks_widget);
-        }
+        int lastPoint = track.lastIndexOf(".");
+        QString fileNameNoExt = track.left(lastPoint);
+        QListWidgetItem *item = new QListWidgetItem(fileNameNoExt, tracks_widget);
+        item->setData(Qt::UserRole, QVariant(path + '/' + track));
     }
 }
