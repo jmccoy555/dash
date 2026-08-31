@@ -581,12 +581,23 @@ void CameraPage::connect_local_stream()
     this->local_cam->load();
     qDebug() << "camera status: " << this->local_cam->status();
 
-    QSize res = this->choose_video_resolution();
+    // Sets the camera's own viewfinder resolution as a side effect - the
+    // return value isn't used to constrain the pipeline below any more
+    // (see the comment there).
+    this->choose_video_resolution();
 
     DASH_LOG(info) << "[CameraPage] Creating GStreamer pipeline with " << this->config->get_cam_local_device().toStdString();
+    // Pinning the capsfilter to video/x-raw at a fixed width/height broke
+    // caps negotiation outright (white screen, no error/log output) on any
+    // device that doesn't offer raw video at its higher resolutions - e.g.
+    // the Rock 5B's onboard HDMI capture input (which only offers
+    // BGR3/NV12/NV16/NV24, not plain video/x-raw at all) and USB webcams
+    // that only offer MJPEG above a low resolution. Offering both
+    // video/x-raw and image/jpeg without constraining resolution lets each
+    // device negotiate whatever it actually supports - decodebin autoplugs
+    // a JPEG decoder when MJPEG is what gets picked.
     std::string pipeline = "v4l2src device=" + this->config->get_cam_local_device().toStdString() +
-                           " ! capsfilter caps=\"video/x-raw,width=" + std::to_string(res.width()) + ",height=" + std::to_string(res.height()) + ";image/jpeg,width=" + std::to_string(res.width()) + ",height=" + std::to_string(res.height()) + "\"" +
-                           " ! decodebin";
+                           " ! video/x-raw;image/jpeg ! decodebin";
     init_gstreamer_pipeline(pipeline);
     //emit the connected signal before we resize anything, so that videoContainer has had time to resize to the proper dimensions
     emit connected_local();
