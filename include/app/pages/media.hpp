@@ -4,12 +4,15 @@
 #include <QGraphicsScene>
 #include <QGraphicsVideoItem>
 #include <QGraphicsView>
+#include <QListWidget>
 #include <QMap>
 #include <QMediaPlayer>
 #include <QMultimedia>
 #include <QPluginLoader>
 #include <QResizeEvent>
 #include <QString>
+#include <QStringList>
+#include <QTimer>
 #include <QtWidgets>
 
 #include "app/config.hpp"
@@ -78,6 +81,33 @@ class RadioPlayerTab : public QWidget {
     QWidget *tuner_widget();
     QWidget *controls_widget();
 
+};
+
+class DabPlayerTab : public QWidget {
+    Q_OBJECT
+
+   public:
+    DabPlayerTab(Arbiter &arbiter, QWidget *parent = nullptr);
+    ~DabPlayerTab();
+
+   private:
+    static QMap<QString, QFileInfo> get_plugins();
+
+    Arbiter &arbiter;
+    Config *config;
+    QMap<QString, QFileInfo> plugins;
+    QPluginLoader loader;
+    QTimer *poll_timer;
+    Selector *plugin_selector;
+    QLabel *status_label;
+    QLabel *now_playing_label;
+    QListWidget *services_widget;
+    QPushButton *stop_button;
+
+    void load_plugin();
+    void refresh();
+    QWidget *dialog_body();
+    QWidget *header_widget();
 };
 
 class LocalPlayerTab : public QWidget {

@@ -49,6 +49,16 @@ class Config : public QObject {
             this->settings.setValue("Pages/Media/Radio/plugin", this->radio_plugin);
     }
 
+    inline QString get_dab_plugin() { return this->dab_plugin; }
+    inline void set_dab_plugin(QString dab_plugin)
+    {
+        this->dab_plugin = dab_plugin;
+        if (this->dab_plugin == "unloader")
+            this->settings.remove("Pages/Media/Dab/plugin");
+        else
+            this->settings.setValue("Pages/Media/Dab/plugin", this->dab_plugin);
+    }
+
     inline QString get_media_home() { return this->media_home; }
     inline void set_media_home(QString media_home)
     {
@@ -184,6 +194,7 @@ class Config : public QObject {
     double radio_station;
     bool radio_muted;
     QString radio_plugin;
+    QString dab_plugin;
     QString media_home;
     bool si_units;
     ICANBus::VehicleBusType vehicle_can_bus;

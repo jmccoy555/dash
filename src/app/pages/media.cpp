@@ -12,6 +12,7 @@
 
 #include "app/window.hpp"
 #include "app/pages/media.hpp"
+#include "plugins/dab_plugin.hpp"
 #include "plugins/radio_plugin.hpp"
 
 void ClickableSlider::mousePressEvent(QMouseEvent *event)
@@ -33,6 +34,7 @@ MediaPage::MediaPage(Arbiter &arbiter, QWidget *parent)
 void MediaPage::init()
 {
     this->addTab(new RadioPlayerTab(this->arbiter, this), "Radio");
+    this->addTab(new DabPlayerTab(this->arbiter, this), "DAB");
     this->addTab(new BluetoothPlayerTab(this->arbiter, this), "Bluetooth");
     this->addTab(new LocalPlayerTab(this->arbiter, this), "Local");
     this->addTab(new DashcamTab(this->arbiter, this), "Dashcam");
@@ -295,6 +297,148 @@ QWidget *RadioPlayerTab::controls_widget()
     layout->addWidget(this->tuner, 4);
     layout->addWidget(next_station);
     layout->addStretch(1);
+
+    return widget;
+}
+
+QMap<QString, QFileInfo> DabPlayerTab::get_plugins()
+{
+    QMap<QString, QFileInfo> plugins;
+    for (auto plugin : Session::plugin_dir("dab").entryInfoList(QDir::Files)) {
+        if (QLibrary::isLibrary(plugin.absoluteFilePath()))
+            plugins[Session::fmt_plugin(plugin.baseName())] = plugin;
+    }
+
+    return plugins;
+}
+
+DabPlayerTab::DabPlayerTab(Arbiter &arbiter, QWidget *parent)
+    : QWidget(parent)
+    , arbiter(arbiter)
+    , config(Config::get_instance())
+    , plugins(DabPlayerTab::get_plugins())
+    , loader()
+    , poll_timer(new QTimer(this))
+    , plugin_selector(new Selector(this->plugins.keys(), this->config->get_dab_plugin(), this->arbiter.forge().font(14), this->arbiter, nullptr, "unloader"))
+    , status_label(new QLabel(this))
+    , now_playing_label(new QLabel(this))
+    , services_widget(new QListWidget(this))
+    , stop_button(new QPushButton("stop", this))
+{
+    this->status_label->setAlignment(Qt::AlignCenter);
+    this->now_playing_label->setAlignment(Qt::AlignCenter);
+    Session::Forge::to_touch_scroller(this->services_widget);
+
+    connect(this->stop_button, &QPushButton::clicked, [this]{
+        if (DabPlugin *plugin = qobject_cast<DabPlugin *>(this->loader.instance()))
+            plugin->stop();
+    });
+
+    connect(this->services_widget, &QListWidget::itemClicked, [this](QListWidgetItem *item){
+        if (DabPlugin *plugin = qobject_cast<DabPlugin *>(this->loader.instance()))
+            plugin->play(item->data(Qt::UserRole).toString());
+    });
+
+    // There's no manual tuning here - channel is a DAB implementation detail
+    // the plugin resolves for itself (see welle_io), and the station list
+    // fills in as the scan finds things, so this just polls the plugin's
+    // already-synchronous getters to reflect whatever it currently knows.
+    connect(this->poll_timer, &QTimer::timeout, [this]{ this->refresh(); });
+    this->poll_timer->start(1000);
+
+    auto layout = new QVBoxLayout(this);
+    layout->addWidget(this->header_widget());
+    layout->addWidget(this->status_label);
+    layout->addWidget(this->now_playing_label);
+    layout->addWidget(this->services_widget, 1);
+    layout->addWidget(this->stop_button, 0, Qt::AlignCenter);
+
+    this->load_plugin();
+}
+
+DabPlayerTab::~DabPlayerTab()
+{
+    this->loader.unload();
+}
+
+void DabPlayerTab::load_plugin()
+{
+    if (this->loader.isLoaded())
+        this->loader.unload();
+
+    this->services_widget->clear();
+    this->status_label->setText(QString());
+    this->now_playing_label->setText(QString());
+
+    auto key = this->plugin_selector->get_current();
+    if (!key.isNull())
+        this->loader.setFileName(this->plugins[key].absoluteFilePath());
+    this->config->set_dab_plugin(key);
+}
+
+void DabPlayerTab::refresh()
+{
+    DabPlugin *plugin = qobject_cast<DabPlugin *>(this->loader.instance());
+    if (!plugin) return;
+
+    this->status_label->setText(plugin->scanning() ? "Scanning for stations…" : QString());
+
+    QString selected_id;
+    if (QListWidgetItem *current = this->services_widget->currentItem())
+        selected_id = current->data(Qt::UserRole).toString();
+
+    this->services_widget->clear();
+    for (const DabService &service : plugin->services()) {
+        QListWidgetItem *item = new QListWidgetItem(service.label, this->services_widget);
+        item->setData(Qt::UserRole, service.id);
+        if (service.id == selected_id)
+            item->setSelected(true);
+    }
+
+    QString now_playing = plugin->now_playing();
+    this->now_playing_label->setText(now_playing.isEmpty() ? QString() : QString("Now playing: %1").arg(now_playing));
+}
+
+QWidget *DabPlayerTab::dialog_body()
+{
+    auto widget = new QWidget(this);
+    auto layout = new QVBoxLayout(widget);
+
+    layout->addStretch();
+    layout->addWidget(this->plugin_selector, 0, Qt::AlignCenter);
+    layout->addStretch();
+
+    return widget;
+}
+
+QWidget *DabPlayerTab::header_widget()
+{
+    auto widget = new QWidget(this);
+    auto layout = new QHBoxLayout(widget);
+
+    auto dialog = new Dialog(this->arbiter, true, this->window());
+    dialog->set_body(this->dialog_body());
+
+    auto load_button = new QPushButton("load");
+    connect(load_button, &QPushButton::clicked, [this]{ this->load_plugin(); });
+    dialog->set_button(load_button);
+
+    auto settings_button = new QPushButton();
+    settings_button->setFlat(true);
+    this->arbiter.forge().iconize("settings", settings_button, 24);
+    connect(settings_button, &QPushButton::clicked, [dialog]{ dialog->open(); });
+
+    auto rescan_button = new QPushButton();
+    rescan_button->setFlat(true);
+    this->arbiter.forge().iconize("refresh", rescan_button, 24);
+    connect(rescan_button, &QPushButton::clicked, [this]{
+        if (DabPlugin *plugin = qobject_cast<DabPlugin *>(this->loader.instance()))
+            plugin->rescan();
+    });
+
+    layout->addWidget(settings_button);
+    layout->addStretch();
+    layout->addWidget(rescan_button);
 
     return widget;
 }

@@ -20,6 +20,7 @@ FOREACH(plugin_type ${plugin_types})
         target_include_directories(${plugin} SYSTEM PRIVATE
             ${Qt5Xml_INCLUDE_DIRS}
             ${Qt5WebSockets_INCLUDE_DIRS}
+            ${Qt5Network_INCLUDE_DIRS}
             ${Qt5SerialBus_INCLUDE_DIRS}
             ${Qt5Multimedia_INCLUDE_DIRS}
             ${Qt5MultimediaWidgets_INCLUDE_DIRS}
@@ -50,6 +51,7 @@ FOREACH(plugin_type ${plugin_types})
             ${Boost_LIBRARIES}
             ${Qt5Xml_LIBRARIES}
             ${Qt5WebSockets_LIBRARIES}
+            ${Qt5Network_LIBRARIES}
             ${Qt5SerialBus_LIBRARIES}
             ${Qt5Multimedia_LIBRARIES}
             ${Qt5MultimediaWidgets_LIBRARIES}
