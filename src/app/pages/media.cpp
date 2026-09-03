@@ -1,3 +1,5 @@
+#include <algorithm>
+
 #include <fileref.h>
 #include <math.h>
 #include <tag.h>
@@ -349,21 +351,29 @@ DabPlayerTab::DabPlayerTab(Arbiter &arbiter, QWidget *parent)
     , plugin_selector(new Selector(this->plugins.keys(), this->config->get_dab_plugin(), this->arbiter.forge().font(14), this->arbiter, nullptr, "unloader"))
     , status_label(new QLabel(this))
     , now_playing_label(new QLabel(this))
-    , services_widget(new QListWidget(this))
+    , services_area(new QScrollArea(this))
+    , services_container(new QWidget(this->services_area))
     , stop_button(new QPushButton("stop", this))
 {
     this->status_label->setAlignment(Qt::AlignCenter);
     this->now_playing_label->setAlignment(Qt::AlignCenter);
-    Session::Forge::to_touch_scroller(this->services_widget);
+
+    // A big-tile grid rather than the old flat list - DAB routinely turns up
+    // 100+ stations once a scan's run for a while, and a thin list of text
+    // rows is exactly the kind of small, precise-tap-required UI that's
+    // unusable while actually driving. Letter-grouped since that's the one
+    // grouping that needs no extra data - welle-cli's own API only ever
+    // gives this app a station's id and label, nothing like a genre.
+    new QVBoxLayout(this->services_container);
+    this->services_area->setWidget(this->services_container);
+    this->services_area->setWidgetResizable(true);
+    this->services_area->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    this->services_area->setFrameShape(QFrame::NoFrame);
+    Session::Forge::to_touch_scroller(this->services_area);
 
     connect(this->stop_button, &QPushButton::clicked, [this]{
         if (DabPlugin *plugin = qobject_cast<DabPlugin *>(this->loader.instance()))
             plugin->stop();
-    });
-
-    connect(this->services_widget, &QListWidget::itemClicked, [this](QListWidgetItem *item){
-        if (DabPlugin *plugin = qobject_cast<DabPlugin *>(this->loader.instance()))
-            plugin->play(item->data(Qt::UserRole).toString());
     });
 
     // There's no manual tuning here - channel is a DAB implementation detail
@@ -377,7 +387,7 @@ DabPlayerTab::DabPlayerTab(Arbiter &arbiter, QWidget *parent)
     layout->addWidget(this->header_widget());
     layout->addWidget(this->status_label);
     layout->addWidget(this->now_playing_label);
-    layout->addWidget(this->services_widget, 1);
+    layout->addWidget(this->services_area, 1);
     layout->addWidget(this->stop_button, 0, Qt::AlignCenter);
 
     this->load_plugin();
@@ -393,7 +403,7 @@ void DabPlayerTab::load_plugin()
     if (this->loader.isLoaded())
         this->loader.unload();
 
-    this->services_widget->clear();
+    this->rebuild_services({});
     this->status_label->setText(QString());
     this->now_playing_label->setText(QString());
 
@@ -410,20 +420,88 @@ void DabPlayerTab::refresh()
 
     this->status_label->setText(plugin->scanning() ? "Scanning for stations…" : QString());
 
-    QString selected_id;
-    if (QListWidgetItem *current = this->services_widget->currentItem())
-        selected_id = current->data(Qt::UserRole).toString();
+    QList<DabService> services = plugin->services();
 
-    this->services_widget->clear();
-    for (const DabService &service : plugin->services()) {
-        QListWidgetItem *item = new QListWidgetItem(service.label, this->services_widget);
-        item->setData(Qt::UserRole, service.id);
-        if (service.id == selected_id)
-            item->setSelected(true);
+    // Rebuilding the whole grid on every poll tick (once a second, the whole
+    // time a scan runs) would mean losing scroll position every second
+    // while someone's trying to actually tap something - only worth doing
+    // when the station list has actually changed.
+    QStringList signature_parts;
+    for (const DabService &service : services)
+        signature_parts << (service.id + ":" + service.label);
+    QString signature = signature_parts.join('\n');
+    if (signature != this->services_signature) {
+        this->services_signature = signature;
+        this->rebuild_services(services);
     }
 
     QString now_playing = plugin->now_playing();
     this->now_playing_label->setText(now_playing.isEmpty() ? QString() : QString("Now playing: %1").arg(now_playing));
+
+    // Highlighting can change (tapping a station) independently of the
+    // station list itself, so this always runs, whether or not the grid was
+    // just rebuilt above.
+    for (auto it = this->tiles.constBegin(); it != this->tiles.constEnd(); ++it)
+        it.value()->setChecked(!now_playing.isEmpty() && it.value()->text() == now_playing);
+}
+
+void DabPlayerTab::rebuild_services(QList<DabService> services)
+{
+    QLayout *container_layout = this->services_container->layout();
+    QLayoutItem *child;
+    while ((child = container_layout->takeAt(0)) != nullptr) {
+        delete child->widget();
+        delete child;
+    }
+    this->tiles.clear();
+
+    std::sort(services.begin(), services.end(), [](const DabService &a, const DabService &b) {
+        return QString::compare(a.label, b.label, Qt::CaseInsensitive) < 0;
+    });
+
+    QMap<QString, QList<DabService>> groups;
+    for (const DabService &service : services) {
+        QString letter = "#";
+        if (!service.label.isEmpty() && service.label.at(0).isLetter())
+            letter = service.label.at(0).toUpper();
+        groups[letter].append(service);
+    }
+
+    const int columns = 5;
+    for (auto group = groups.constBegin(); group != groups.constEnd(); ++group) {
+        QLabel *header = new QLabel(group.key(), this->services_container);
+        header->setFont(this->arbiter.forge().font(20));
+        container_layout->addWidget(header);
+
+        QWidget *grid_widget = new QWidget(this->services_container);
+        QGridLayout *grid = new QGridLayout(grid_widget);
+        int i = 0;
+        for (const DabService &service : group.value()) {
+            QPushButton *tile = this->service_tile(service);
+            grid->addWidget(tile, i / columns, i % columns);
+            this->tiles[service.id] = tile;
+            i++;
+        }
+        container_layout->addWidget(grid_widget);
+    }
+
+    static_cast<QVBoxLayout *>(container_layout)->addStretch();
+}
+
+QPushButton *DabPlayerTab::service_tile(DabService service)
+{
+    QPushButton *tile = new QPushButton(service.label, this->services_container);
+    tile->setCheckable(true);
+    tile->setFixedSize(340, 100);
+    tile->setFont(this->arbiter.forge().font(16));
+
+    QString id = service.id;
+    connect(tile, &QPushButton::clicked, [this, id] {
+        if (DabPlugin *plugin = qobject_cast<DabPlugin *>(this->loader.instance()))
+            plugin->play(id);
+    });
+
+    return tile;
 }
 
 QWidget *DabPlayerTab::dialog_body()

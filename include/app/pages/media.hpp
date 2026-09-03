@@ -22,6 +22,7 @@
 #include "app/services/youtube.hpp"
 #include "app/widgets/selector.hpp"
 #include "app/widgets/tuner.hpp"
+#include "plugins/dab_plugin.hpp"
 
 class Arbiter;
 class DashcamVideoView;
@@ -110,11 +111,17 @@ class DabPlayerTab : public QWidget {
     Selector *plugin_selector;
     QLabel *status_label;
     QLabel *now_playing_label;
-    QListWidget *services_widget;
+    QScrollArea *services_area;      // scroll container - services_container lives inside it
+    QWidget *services_container;     // rebuilt (grouped-by-letter grid of tiles) only when the station list actually changes
     QPushButton *stop_button;
+
+    QString services_signature;              // id:label pairs of the last render - guards against rebuilding (and losing scroll position) every poll tick for nothing
+    QMap<QString, QPushButton *> tiles;       // service id -> its tile, so now-playing highlighting can update without a full rebuild
 
     void load_plugin();
     void refresh();
+    void rebuild_services(QList<DabService> services);
+    QPushButton *service_tile(DabService service);
     QWidget *dialog_body();
     QWidget *header_widget();
 };
