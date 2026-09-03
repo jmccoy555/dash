@@ -33,13 +33,38 @@ MediaPage::MediaPage(Arbiter &arbiter, QWidget *parent)
 
 void MediaPage::init()
 {
-    this->addTab(new RadioPlayerTab(this->arbiter, this), "Radio");
-    this->addTab(new DabPlayerTab(this->arbiter, this), "DAB");
-    this->addTab(new BluetoothPlayerTab(this->arbiter, this), "Bluetooth");
-    this->addTab(new LocalPlayerTab(this->arbiter, this), "Local");
-    this->addTab(new JellyfinTab(this->arbiter, this), "Jellyfin");
-    this->addTab(new YouTubeTab(this->arbiter, this), "YouTube");
-    this->addTab(new DashcamTab(this->arbiter, this), "Dashcam");
+    auto add_tab = [this](QWidget *widget, QString name) {
+        this->addTab(widget, name);
+        this->tabs.append(widget);
+    };
+
+    add_tab(new RadioPlayerTab(this->arbiter, this), "Radio");
+    add_tab(new DabPlayerTab(this->arbiter, this), "DAB");
+    add_tab(new BluetoothPlayerTab(this->arbiter, this), "Bluetooth");
+    add_tab(new LocalPlayerTab(this->arbiter, this), "Local");
+    add_tab(new JellyfinTab(this->arbiter, this), "Jellyfin");
+    add_tab(new YouTubeTab(this->arbiter, this), "DashTube");
+    add_tab(new DashcamTab(this->arbiter, this), "Dashcam");
+
+    // Tabs are still fully constructed either way (their services - Jellyfin,
+    // YouTube, DAB's scan - already run app-wide via Session::System
+    // regardless), this just hides the tab itself from the bar, the same
+    // "stays alive, just not shown" shape as the Pages toggle in Layout
+    // settings. Reacts live so flipping a checkbox in settings doesn't need
+    // a restart to take effect.
+    this->update_tab_visibility(Config::get_instance()->get_disabled_media_tabs());
+    connect(Config::get_instance(), &Config::disabled_media_tabs_changed, this, [this](QStringList disabled) {
+        this->update_tab_visibility(disabled);
+    });
+}
+
+void MediaPage::update_tab_visibility(QStringList disabled)
+{
+    for (QWidget *tab : this->tabs) {
+        int index = this->indexOf(tab);
+        if (index >= 0)
+            this->setTabVisible(index, !disabled.contains(this->tabText(index)));
+    }
 }
 
 BluetoothPlayerTab::BluetoothPlayerTab(Arbiter &arbiter, QWidget *parent)
@@ -669,6 +694,7 @@ JellyfinTab::JellyfinTab(Arbiter &arbiter, QWidget *parent)
     , video_scene(new QGraphicsScene(this))
     , video_item(new QGraphicsVideoItem())
     , video_widget(new DashcamVideoView(this->video_scene, this->video_item, this))
+    , rear_video_widget(new DashcamVideoView(this->video_scene, this->video_item, nullptr))
     , breadcrumb_label(new QLabel("Jellyfin", this))
     , status_label(new QLabel(this))
     , username_input(nullptr)
@@ -699,6 +725,7 @@ JellyfinTab::JellyfinTab(Arbiter &arbiter, QWidget *parent)
 
     this->content_stack->addWidget(this->browser_widget);
     this->content_stack->addWidget(this->video_widget);
+    this->arbiter.system().rear_display.register_view("Jellyfin", this->rear_video_widget);
 
     QMediaPlaylist *playlist = new QMediaPlaylist(this->player);
     playlist->setPlaybackMode(QMediaPlaylist::Loop);
@@ -862,6 +889,8 @@ void JellyfinTab::play_from(int index)
         playlist->setCurrentIndex(start_position);
 
     this->content_stack->setCurrentWidget(target.type == Jellyfin::ItemType::Video ? (QWidget *)this->video_widget : (QWidget *)this->browser_widget);
+    if (target.type == Jellyfin::ItemType::Video)
+        this->arbiter.system().rear_display.show_view("Jellyfin");
     this->player->play();
 }
 
@@ -1083,6 +1112,7 @@ YouTubeTab::YouTubeTab(Arbiter &arbiter, QWidget *parent)
     , video_scene(new QGraphicsScene(this))
     , video_item(new QGraphicsVideoItem())
     , video_widget(new DashcamVideoView(this->video_scene, this->video_item, this))
+    , rear_video_widget(new DashcamVideoView(this->video_scene, this->video_item, nullptr))
     , status_label(new QLabel(this))
 {
     Session::Forge::to_touch_scroller(this->results_widget);
@@ -1108,6 +1138,7 @@ YouTubeTab::YouTubeTab(Arbiter &arbiter, QWidget *parent)
 
     this->content_stack->addWidget(this->results_widget);
     this->content_stack->addWidget(this->video_widget);
+    this->arbiter.system().rear_display.register_view("DashTube", this->rear_video_widget);
 
     connect(this->results_widget, &QListWidget::itemClicked, [this](QListWidgetItem *item) {
         this->play_from(item->data(Qt::UserRole).toInt());
@@ -1131,6 +1162,7 @@ YouTubeTab::YouTubeTab(Arbiter &arbiter, QWidget *parent)
         this->status_label->setText(QString());
         this->player->setMedia(QMediaContent(QUrl::fromLocalFile(localPath)));
         this->content_stack->setCurrentWidget(this->video_widget);
+        this->arbiter.system().rear_display.show_view("DashTube");
         this->player->play();
     });
 
@@ -1250,7 +1282,7 @@ QWidget *YouTubeTab::header_widget()
     this->search_input->setContextMenuPolicy(Qt::NoContextMenu);
     this->search_input->setFont(this->arbiter.forge().font(16));
     this->search_input->setAlignment(Qt::AlignCenter);
-    this->search_input->setPlaceholderText("Search YouTube");
+    this->search_input->setPlaceholderText("Search DashTube");
     connect(this->search_input, &QLineEdit::returnPressed, [this] { this->search(); });
     layout->addWidget(this->search_input, 1);
 
@@ -1380,6 +1412,18 @@ void DashcamVideoView::resizeEvent(QResizeEvent *event)
     this->fitInView(this->item, Qt::KeepAspectRatioByExpanding);
 }
 
+void DashcamVideoView::showEvent(QShowEvent *event)
+{
+    QGraphicsView::showEvent(event);
+    // Covers becoming visible without a resize - e.g. a rear-display mirror
+    // view living in RearDisplay's own QStackedWidget, switched to via
+    // setCurrentWidget() rather than ever being resized. Harmless/redundant
+    // alongside the front views' other fit triggers (videoAvailableChanged,
+    // nativeSizeChanged, content_stack's currentChanged) - fitInView is
+    // idempotent given the same size/item.
+    this->fitInView(this->item, Qt::KeepAspectRatioByExpanding);
+}
+
 const QString DashcamTab::FOOTAGE_DIR = "/home/dash/dashcam-footage";
 
 DashcamTab::DashcamTab(Arbiter &arbiter, QWidget *parent)
@@ -1392,7 +1436,9 @@ DashcamTab::DashcamTab(Arbiter &arbiter, QWidget *parent)
     this->video_scene->setBackgroundBrush(Qt::black);
     this->video_scene->addItem(this->video_item);
     this->video_widget = new DashcamVideoView(this->video_scene, this->video_item, this);
+    this->rear_video_widget = new DashcamVideoView(this->video_scene, this->video_item, nullptr);
     this->player->setVideoOutput(this->video_item);
+    this->arbiter.system().rear_display.register_view("Dashcam", this->rear_video_widget);
 
     connect(this->player, &QMediaPlayer::videoAvailableChanged, this->video_widget, [this](bool) {
         this->video_widget->fitInView(this->video_item, Qt::KeepAspectRatioByExpanding);
@@ -1414,6 +1460,7 @@ QWidget *DashcamTab::clips_widget()
     connect(clips, &QListWidget::itemClicked, [this](QListWidgetItem *item) {
         QString path = item->data(Qt::UserRole).toString();
         this->player->setMedia(QMediaContent(QUrl::fromLocalFile(path)));
+        this->arbiter.system().rear_display.show_view("Dashcam");
         this->player->play();
     });
 

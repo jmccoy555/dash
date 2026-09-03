@@ -25,6 +25,7 @@
 #include "app/services/bluetooth.hpp"
 #include "app/services/clock.hpp"
 #include "app/services/jellyfin.hpp"
+#include "app/services/rear_display.hpp"
 #include "app/services/youtube.hpp"
 #include "app/services/server.hpp"
 #include "app/widgets/fullscreen_toggler.hpp"
@@ -150,6 +151,7 @@ class Session {
         Bluetooth bluetooth;
         Jellyfin jellyfin;
         YouTube youtube;
+        RearDisplay rear_display;
         Brightness brightness;
         uint8_t volume;
 

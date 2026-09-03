@@ -230,6 +230,7 @@ Session::System::System(QSettings &settings, Arbiter &arbiter)
     , bluetooth(arbiter)
     , jellyfin(arbiter)
     , youtube(arbiter)
+    , rear_display(arbiter)
     , brightness(settings)
     , volume(Session::System::get_current_volume())
 {

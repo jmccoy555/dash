@@ -21,6 +21,7 @@ Config::Config()
     this->jellyfin_device_id = this->settings.value("Pages/Media/Jellyfin/device_id", QString()).toString();
     this->jellyfin_offline_dir = this->settings.value("Pages/Media/Jellyfin/offline_dir", QStandardPaths::writableLocation(QStandardPaths::MusicLocation) + "/jellyfin").toString();
     this->youtube_cache_dir = this->settings.value("Pages/Media/YouTube/cache_dir", QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + "/youtube").toString();
+    this->disabled_media_tabs = this->settings.value("Pages/Media/disabled_tabs", QStringList()).toStringList();
     this->si_units = this->settings.value("Pages/Vehicle/si_units", false).toBool();
     // 0 - SocketCAN
     // 1 - Elm 327 USB

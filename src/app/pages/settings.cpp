@@ -33,9 +33,74 @@ void SettingsPage::init()
 {
     this->addTab(new MainSettingsTab(this->arbiter), "Main");
     this->addTab(new LayoutSettingsTab(this->arbiter), "Layout");
+    this->addTab(new MediaSettingsTab(this->arbiter), "Media");
     this->addTab(new BluetoothSettingsTab(this->arbiter, this), "Bluetooth");
     this->addTab(new ActionsSettingsTab(this->arbiter), "Actions");
     this->addTab(new AboutSettingsTab(this->arbiter), "About");
+}
+
+// Same list, in the same order, as the addTab() labels in MediaPage::init()
+// (src/app/pages/media.cpp) - there's no runtime-queryable registry of the
+// Media page's own tabs the way Layout's Pages toggle has via
+// arbiter.layout().pages(), so this just has to be kept in sync by hand.
+static const QStringList MEDIA_TAB_NAMES = {"Radio", "DAB", "Bluetooth", "Local", "Jellyfin", "DashTube", "Dashcam"};
+
+MediaSettingsTab::MediaSettingsTab(Arbiter &arbiter, QWidget *parent)
+    : QWidget(parent)
+    , arbiter(arbiter)
+{
+    this->config = Config::get_instance();
+
+    QVBoxLayout *layout = new QVBoxLayout(this);
+    layout->setContentsMargins(6, 0, 6, 0);
+
+    layout->addWidget(this->settings_widget());
+}
+
+QWidget *MediaSettingsTab::settings_widget()
+{
+    QWidget *widget = new QWidget(this);
+    QVBoxLayout *layout = new QVBoxLayout(widget);
+
+    layout->addWidget(this->tabs_widget());
+
+    QScrollArea *scroll_area = new QScrollArea(this);
+    Session::Forge::to_touch_scroller(scroll_area);
+    scroll_area->setWidgetResizable(true);
+    scroll_area->setWidget(widget);
+
+    return scroll_area;
+}
+
+QWidget *MediaSettingsTab::tabs_widget()
+{
+    QWidget *widget = new QWidget(this);
+    QHBoxLayout *layout = new QHBoxLayout(widget);
+
+    QLabel *label = new QLabel("Tabs", widget);
+    layout->addWidget(label, 1);
+
+    QGroupBox *group = new QGroupBox(widget);
+    QVBoxLayout *group_layout = new QVBoxLayout(group);
+
+    QStringList disabled = this->config->get_disabled_media_tabs();
+    for (const QString &name : MEDIA_TAB_NAMES) {
+        QCheckBox *button = new QCheckBox(name, group);
+        button->setChecked(!disabled.contains(name));
+        connect(button, &QCheckBox::toggled, [this, name](bool checked) {
+            QStringList disabled = this->config->get_disabled_media_tabs();
+            if (checked)
+                disabled.removeAll(name);
+            else if (!disabled.contains(name))
+                disabled.append(name);
+            this->config->set_disabled_media_tabs(disabled);
+        });
+        group_layout->addWidget(button);
+    }
+
+    layout->addWidget(group, 1, Qt::AlignHCenter);
+
+    return widget;
 }
 
 MainSettingsTab::MainSettingsTab(Arbiter &arbiter, QWidget *parent)

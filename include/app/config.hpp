@@ -108,6 +108,19 @@ class Config : public QObject {
         this->settings.setValue("Pages/Media/YouTube/cache_dir", this->youtube_cache_dir);
     }
 
+    // Which of the Media page's own tabs (by their tab label - "Radio",
+    // "DAB", "Bluetooth", "Local", "Jellyfin", "YouTube", "Dashcam") are
+    // hidden. Absent from this list = shown, so a fresh install with no
+    // saved value shows everything, matching the app's existing behaviour
+    // before this setting existed.
+    inline QStringList get_disabled_media_tabs() { return this->disabled_media_tabs; }
+    inline void set_disabled_media_tabs(QStringList disabled_media_tabs)
+    {
+        this->disabled_media_tabs = disabled_media_tabs;
+        this->settings.setValue("Pages/Media/disabled_tabs", this->disabled_media_tabs);
+        emit disabled_media_tabs_changed(this->disabled_media_tabs);
+    }
+
     inline bool get_si_units() { return this->si_units; }
     inline void set_si_units(bool si_units)
     {
@@ -244,6 +257,7 @@ class Config : public QObject {
     QString jellyfin_device_id;
     QString jellyfin_offline_dir;
     QString youtube_cache_dir;
+    QStringList disabled_media_tabs;
     bool si_units;
     ICANBus::VehicleBusType vehicle_can_bus;
     QString vehicle_interface;
@@ -266,4 +280,5 @@ class Config : public QObject {
     void cam_overlay_changed(bool enabled);
     void vehicle_can_bus_changed(ICANBus::VehicleBusType state);
     void vehicle_interface_changed(QString interface);
+    void disabled_media_tabs_changed(QStringList disabled);
 };

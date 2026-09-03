@@ -64,6 +64,20 @@ class LayoutSettingsTab : public QWidget {
     Config *config;
 };
 
+class MediaSettingsTab : public QWidget {
+    Q_OBJECT
+
+   public:
+    MediaSettingsTab(Arbiter &arbiter, QWidget *parent = nullptr);
+
+   private:
+    QWidget *settings_widget();
+    QWidget *tabs_widget();
+
+    Arbiter &arbiter;
+    Config *config;
+};
+
 class BluetoothSettingsTab : public QWidget {
     Q_OBJECT
 

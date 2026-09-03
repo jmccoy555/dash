@@ -10,6 +10,7 @@
 #include <QMultimedia>
 #include <QPluginLoader>
 #include <QResizeEvent>
+#include <QShowEvent>
 #include <QString>
 #include <QStringList>
 #include <QTimer>
@@ -46,6 +47,11 @@ class MediaPage : public QTabWidget, public Page {
     MediaPage(Arbiter &arbiter, QWidget *parent = nullptr);
 
     void init() override;
+
+   private:
+    QList<QWidget *> tabs;  // in the same order added - index lines up with the tab label passed to addTab()
+
+    void update_tab_visibility(QStringList disabled);
 };
 
 class BluetoothPlayerTab : public QWidget {
@@ -150,6 +156,7 @@ class JellyfinTab : public QWidget {
     QGraphicsScene *video_scene;
     QGraphicsVideoItem *video_item;
     DashcamVideoView *video_widget;
+    DashcamVideoView *rear_video_widget;  // second view of the same video_scene - see RearDisplay
     QLabel *breadcrumb_label;
     QLabel *status_label;
     QLineEdit *username_input;
@@ -182,6 +189,7 @@ class YouTubeTab : public QWidget {
     QGraphicsScene *video_scene;
     QGraphicsVideoItem *video_item;
     DashcamVideoView *video_widget;
+    DashcamVideoView *rear_video_widget;  // second view of the same video_scene - see RearDisplay
     QLabel *status_label;
 
     QList<YouTube::Video> current_results;
@@ -213,6 +221,7 @@ class DashcamVideoView : public QGraphicsView {
 
    protected:
     void resizeEvent(QResizeEvent *event) override;
+    void showEvent(QShowEvent *event) override;
 
    private:
     QGraphicsVideoItem *item;
@@ -238,4 +247,5 @@ class DashcamTab : public QWidget {
     QGraphicsScene *video_scene;
     QGraphicsVideoItem *video_item;
     DashcamVideoView *video_widget;
+    DashcamVideoView *rear_video_widget;  // second view of the same video_scene - see RearDisplay
 };
