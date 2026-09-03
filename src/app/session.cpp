@@ -231,6 +231,7 @@ Session::System::System(QSettings &settings, Arbiter &arbiter)
     , jellyfin(arbiter)
     , youtube(arbiter)
     , rear_display(arbiter)
+    , thumbnails(arbiter)
     , brightness(settings)
     , volume(Session::System::get_current_volume())
 {
@@ -335,6 +336,28 @@ QFont Session::Forge::font(int size, bool mono) const
     auto scaled = size * this->arbiter_.layout().scale;
 
     return QFont(name, scaled);
+}
+
+QToolButton *Session::Forge::media_tile(QString title, QString image_url) const
+{
+    auto scale = this->arbiter_.layout().scale;
+    QSize icon_size(160 * scale, 160 * scale);
+
+    QToolButton *tile = new QToolButton();
+    tile->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
+    tile->setIconSize(icon_size);
+    tile->setFixedSize(180 * scale, 210 * scale);
+    tile->setText(title);
+
+    // Kept blank (no placeholder icon) until the real thumbnail arrives -
+    // this is called for every row in a list as it's built, so a fetch is
+    // fired off immediately; is a no-op if image_url is empty (containers
+    // with no art) or already cached from an earlier visit.
+    this->arbiter_.system().thumbnails.load(image_url, tile, [tile, icon_size](QPixmap pixmap) {
+        tile->setIcon(QIcon(pixmap.scaled(icon_size, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation)));
+    });
+
+    return tile;
 }
 
 QWidget *Session::Forge::brightness_slider(bool buttons) const

@@ -43,6 +43,7 @@ class Jellyfin : public QObject {
     void sync_favorites();
 
     QUrl stream_url(QString itemId, ItemType type) const;
+    QUrl image_url(QString itemId) const;  // Primary image - empty/404 if the item has none, callers should just leave their placeholder in that case
     QString cached_path(QString itemId) const;  // "" if this item hasn't been synced locally
 
    private:

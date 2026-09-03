@@ -16,6 +16,7 @@
 #include <QSettings>
 #include <QString>
 #include <QPalette>
+#include <QToolButton>
 #include <QWidget>
 
 #include "app/action.hpp"
@@ -26,6 +27,7 @@
 #include "app/services/clock.hpp"
 #include "app/services/jellyfin.hpp"
 #include "app/services/rear_display.hpp"
+#include "app/services/thumbnails.hpp"
 #include "app/services/youtube.hpp"
 #include "app/services/server.hpp"
 #include "app/widgets/fullscreen_toggler.hpp"
@@ -152,6 +154,7 @@ class Session {
         Jellyfin jellyfin;
         YouTube youtube;
         RearDisplay rear_display;
+        Thumbnails thumbnails;
         Brightness brightness;
         uint8_t volume;
 
@@ -177,6 +180,13 @@ class Session {
         void iconize(QString name, QString alt_name, QAbstractButton *button, uint8_t size) const;
         void iconize(QIcon &icon, QAbstractButton *button, uint8_t size) const;
         QFont font(int size, bool mono = false) const;
+        // A grid tile: async-loaded thumbnail above title text, matching
+        // the DAB tab's plain tiles closely enough to feel like the same
+        // family of UI. Shared by JellyfinTab and YouTubeTab, the two tabs
+        // that actually have artwork to show - image_url empty is fine,
+        // the tile just keeps its blank placeholder. Returned unparented
+        // (caller adds it into whatever grid/overlay layout it needs).
+        QToolButton *media_tile(QString title, QString image_url) const;
         QWidget *brightness_slider(bool buttons = true) const;
         QWidget *volume_slider(bool buttons = true) const;
 

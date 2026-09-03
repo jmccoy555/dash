@@ -278,6 +278,16 @@ QUrl Jellyfin::stream_url(QString itemId, ItemType type) const
     return url;
 }
 
+QUrl Jellyfin::image_url(QString itemId) const
+{
+    QUrl url(Config::get_instance()->get_jellyfin_server_url() + "/Items/" + itemId + "/Images/Primary");
+    QUrlQuery query;
+    query.addQueryItem("maxHeight", "300");
+    query.addQueryItem("api_key", this->access_token);
+    url.setQuery(query);
+    return url;
+}
+
 QString Jellyfin::cached_path(QString itemId) const
 {
     QDir dir(Config::get_instance()->get_jellyfin_offline_dir());

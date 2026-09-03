@@ -158,8 +158,9 @@ class JellyfinTab : public QWidget {
     Arbiter &arbiter;
     Config *config;
     QMediaPlayer *player;
-    QStackedWidget *content_stack;  // swaps between browser_widget (lists) and video_widget (Movie/Episode playback)
-    QListWidget *browser_widget;
+    QStackedWidget *content_stack;  // swaps between browser_area (tile grid) and video_widget (Movie/Episode playback)
+    QScrollArea *browser_area;
+    QWidget *browser_container;  // the actual grid - rebuilt (cleared + repopulated) on every navigate()/populate()
     QGraphicsScene *video_scene;
     QGraphicsVideoItem *video_item;
     DashcamVideoView *video_widget;
@@ -190,9 +191,10 @@ class YouTubeTab : public QWidget {
    private:
     Arbiter &arbiter;
     QMediaPlayer *player;
-    QStackedWidget *content_stack;  // swaps between results_widget (search results) and video_widget (playback)
+    QStackedWidget *content_stack;  // swaps between results_area (tile grid) and video_widget (playback)
     QLineEdit *search_input;
-    QListWidget *results_widget;
+    QScrollArea *results_area;
+    QWidget *results_container;  // the actual grid - rebuilt on every populate()
     QGraphicsScene *video_scene;
     QGraphicsVideoItem *video_item;
     DashcamVideoView *video_widget;

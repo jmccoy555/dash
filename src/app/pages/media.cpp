@@ -768,7 +768,8 @@ JellyfinTab::JellyfinTab(Arbiter &arbiter, QWidget *parent)
     , config(Config::get_instance())
     , player(new QMediaPlayer(this))
     , content_stack(new QStackedWidget(this))
-    , browser_widget(new QListWidget(this))
+    , browser_area(new QScrollArea(this))
+    , browser_container(new QWidget(this->browser_area))
     , video_scene(new QGraphicsScene(this))
     , video_item(new QGraphicsVideoItem())
     , video_widget(new DashcamVideoView(this->video_scene, this->video_item, this))
@@ -778,8 +779,14 @@ JellyfinTab::JellyfinTab(Arbiter &arbiter, QWidget *parent)
     , username_input(nullptr)
     , password_input(nullptr)
 {
-    Session::Forge::to_touch_scroller(this->browser_widget);
     this->status_label->setAlignment(Qt::AlignCenter);
+
+    new QVBoxLayout(this->browser_container);
+    this->browser_area->setWidget(this->browser_container);
+    this->browser_area->setWidgetResizable(true);
+    this->browser_area->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    this->browser_area->setFrameShape(QFrame::NoFrame);
+    Session::Forge::to_touch_scroller(this->browser_area);
 
     this->video_scene->setBackgroundBrush(Qt::black);
     this->video_scene->addItem(this->video_item);
@@ -801,29 +808,13 @@ JellyfinTab::JellyfinTab(Arbiter &arbiter, QWidget *parent)
             this->video_widget->fitInView(this->video_item, Qt::KeepAspectRatioByExpanding);
     });
 
-    this->content_stack->addWidget(this->browser_widget);
+    this->content_stack->addWidget(this->browser_area);
     this->content_stack->addWidget(this->video_widget);
     this->arbiter.system().rear_display.register_view("Jellyfin", this->rear_video_widget);
 
     QMediaPlaylist *playlist = new QMediaPlaylist(this->player);
     playlist->setPlaybackMode(QMediaPlaylist::Loop);
     this->player->setPlaylist(playlist);
-
-    connect(this->browser_widget, &QListWidget::itemClicked, [this](QListWidgetItem *list_item) {
-        int index = list_item->data(Qt::UserRole).toInt();
-        if (index == -1) {
-            this->navigate(QString(), QString(), false);
-            return;
-        }
-        if (index < 0 || index >= this->current_items.size())
-            return;
-
-        const Jellyfin::Item &item = this->current_items[index];
-        if (item.type == Jellyfin::ItemType::Container)
-            this->navigate(item.id, item.name, true);
-        else
-            this->play_from(index);
-    });
 
     connect(&this->arbiter.system().jellyfin, &Jellyfin::items_ready, this, [this](QString parentId, QList<Jellyfin::Item> items) {
         // A response for a level the user has since navigated away from -
@@ -888,48 +879,66 @@ void JellyfinTab::navigate(QString parentId, QString label, bool push)
 void JellyfinTab::populate(QList<Jellyfin::Item> items)
 {
     this->current_items = items;
-    this->browser_widget->clear();
+
+    QLayout *container_layout = this->browser_container->layout();
+    QLayoutItem *child;
+    while ((child = container_layout->takeAt(0)) != nullptr) {
+        delete child->widget();
+        delete child;
+    }
+
+    QWidget *grid_widget = new QWidget(this->browser_container);
+    QGridLayout *grid = new QGridLayout(grid_widget);
+    grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);  // media_tile()'s poster-shaped tiles are narrower than the content area can fill edge-to-edge - pack left rather than stretching big gaps between columns
+    const int columns = 8;
+    int i = 0;
 
     if (!this->nav_stack.isEmpty()) {
-        QListWidgetItem *up = new QListWidgetItem("↲", this->browser_widget);
-        up->setData(Qt::UserRole, -1);
+        QToolButton *up = this->arbiter.forge().media_tile("↲ Back", QString());
+        connect(up, &QToolButton::clicked, [this] { this->navigate(QString(), QString(), false); });
+        grid->addWidget(up, 0, 0);
+        i++;
     }
 
-    for (int i = 0; i < items.size(); i++) {
-        const Jellyfin::Item &item = items[i];
+    for (int index = 0; index < items.size(); index++) {
+        const Jellyfin::Item &item = items[index];
+
+        QToolButton *tile = this->arbiter.forge().media_tile(item.name, this->arbiter.system().jellyfin.image_url(item.id).toString());
 
         if (item.type == Jellyfin::ItemType::Container) {
-            QListWidgetItem *list_item = new QListWidgetItem(item.name, this->browser_widget);
-            list_item->setData(Qt::UserRole, i);
-            continue;
+            connect(tile, &QToolButton::clicked, [this, item] { this->navigate(item.id, item.name, true); });
+            grid->addWidget(tile, i / columns, i % columns);
+        } else {
+            connect(tile, &QToolButton::clicked, [this, index] { this->play_from(index); });
+
+            // The star overlays the tile's own top-right corner rather than
+            // sitting in a separate row - QGridLayout allows two widgets in
+            // the same cell as long as their alignment flags don't both
+            // claim the same space, which is exactly what a small corner
+            // badge over a big tile needs.
+            QWidget *cell = new QWidget(grid_widget);
+            QGridLayout *cell_layout = new QGridLayout(cell);
+            cell_layout->setContentsMargins(0, 0, 0, 0);
+            cell_layout->addWidget(tile, 0, 0);
+
+            QPushButton *star = new QPushButton(cell);
+            star->setFlat(true);
+            star->setCheckable(true);
+            star->setChecked(item.isFavorite);
+            this->arbiter.forge().iconize("favorite_border", "favorite", star, 20);
+            QString item_id = item.id;
+            connect(star, &QPushButton::clicked, [this, item_id](bool checked) {
+                this->arbiter.system().jellyfin.toggle_favorite(item_id, checked);
+            });
+            cell_layout->addWidget(star, 0, 0, Qt::AlignTop | Qt::AlignRight);
+
+            grid->addWidget(cell, i / columns, i % columns);
         }
-
-        // Audio/Video rows get a favourite-toggle star alongside the title -
-        // a separate child widget so tapping it doesn't also trigger the
-        // row's own itemClicked (which starts playback).
-        QWidget *row = new QWidget(this->browser_widget);
-        QHBoxLayout *row_layout = new QHBoxLayout(row);
-        row_layout->setContentsMargins(8, 4, 8, 4);
-
-        QLabel *title = new QLabel(item.name, row);
-        row_layout->addWidget(title, 1);
-
-        QPushButton *star = new QPushButton(row);
-        star->setFlat(true);
-        star->setCheckable(true);
-        star->setChecked(item.isFavorite);
-        this->arbiter.forge().iconize("favorite_border", "favorite", star, 20);
-        QString item_id = item.id;
-        connect(star, &QPushButton::clicked, [this, item_id](bool checked) {
-            this->arbiter.system().jellyfin.toggle_favorite(item_id, checked);
-        });
-        row_layout->addWidget(star);
-
-        QListWidgetItem *list_item = new QListWidgetItem(this->browser_widget);
-        list_item->setData(Qt::UserRole, i);
-        list_item->setSizeHint(row->sizeHint());
-        this->browser_widget->setItemWidget(list_item, row);
+        i++;
     }
+
+    container_layout->addWidget(grid_widget);
+    static_cast<QVBoxLayout *>(container_layout)->addStretch();
 }
 
 void JellyfinTab::play_from(int index)
@@ -966,7 +975,7 @@ void JellyfinTab::play_from(int index)
     if (start_position >= 0)
         playlist->setCurrentIndex(start_position);
 
-    this->content_stack->setCurrentWidget(target.type == Jellyfin::ItemType::Video ? (QWidget *)this->video_widget : (QWidget *)this->browser_widget);
+    this->content_stack->setCurrentWidget(target.type == Jellyfin::ItemType::Video ? (QWidget *)this->video_widget : (QWidget *)this->browser_area);
     if (target.type == Jellyfin::ItemType::Video)
         this->arbiter.system().rear_display.show_view("Jellyfin");
     this->player->play();
@@ -996,7 +1005,7 @@ QWidget *JellyfinTab::header_widget()
     back_button->hide();
     connect(back_button, &QPushButton::clicked, [this] {
         this->player->pause();
-        this->content_stack->setCurrentWidget(this->browser_widget);
+        this->content_stack->setCurrentWidget(this->browser_area);
     });
     connect(this->content_stack, &QStackedWidget::currentChanged, [this, back_button](int index) {
         back_button->setVisible(this->content_stack->widget(index) == this->video_widget);
@@ -1186,15 +1195,22 @@ YouTubeTab::YouTubeTab(Arbiter &arbiter, QWidget *parent)
     , player(new QMediaPlayer(this))
     , content_stack(new QStackedWidget(this))
     , search_input(nullptr)
-    , results_widget(new QListWidget(this))
+    , results_area(new QScrollArea(this))
+    , results_container(new QWidget(this->results_area))
     , video_scene(new QGraphicsScene(this))
     , video_item(new QGraphicsVideoItem())
     , video_widget(new DashcamVideoView(this->video_scene, this->video_item, this))
     , rear_video_widget(new DashcamVideoView(this->video_scene, this->video_item, nullptr))
     , status_label(new QLabel(this))
 {
-    Session::Forge::to_touch_scroller(this->results_widget);
     this->status_label->setAlignment(Qt::AlignCenter);
+
+    new QVBoxLayout(this->results_container);
+    this->results_area->setWidget(this->results_container);
+    this->results_area->setWidgetResizable(true);
+    this->results_area->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    this->results_area->setFrameShape(QFrame::NoFrame);
+    Session::Forge::to_touch_scroller(this->results_area);
 
     this->video_scene->setBackgroundBrush(Qt::black);
     this->video_scene->addItem(this->video_item);
@@ -1214,13 +1230,9 @@ YouTubeTab::YouTubeTab(Arbiter &arbiter, QWidget *parent)
             this->video_widget->fitInView(this->video_item, Qt::KeepAspectRatioByExpanding);
     });
 
-    this->content_stack->addWidget(this->results_widget);
+    this->content_stack->addWidget(this->results_area);
     this->content_stack->addWidget(this->video_widget);
     this->arbiter.system().rear_display.register_view("DashTube", this->rear_video_widget);
-
-    connect(this->results_widget, &QListWidget::itemClicked, [this](QListWidgetItem *item) {
-        this->play_from(item->data(Qt::UserRole).toInt());
-    });
 
     connect(&this->arbiter.system().youtube, &YouTube::search_finished, this,
             [this](QString, QList<YouTube::Video> results, QString error) {
@@ -1289,7 +1301,18 @@ void YouTubeTab::show_favorites()
 void YouTubeTab::populate(QList<YouTube::Video> results)
 {
     this->current_results = results;
-    this->results_widget->clear();
+
+    QLayout *container_layout = this->results_container->layout();
+    QLayoutItem *child;
+    while ((child = container_layout->takeAt(0)) != nullptr) {
+        delete child->widget();
+        delete child;
+    }
+
+    QWidget *grid_widget = new QWidget(this->results_container);
+    QGridLayout *grid = new QGridLayout(grid_widget);
+    grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);  // see the equivalent comment in JellyfinTab::populate()
+    const int columns = 8;
 
     for (int i = 0; i < results.size(); i++) {
         const YouTube::Video &video = results[i];
@@ -1298,17 +1321,21 @@ void YouTubeTab::populate(QList<YouTube::Video> results)
         if (video.durationSecs > 0)
             text += QString("  (%1)").arg(LocalPlayerTab::durationFmt(video.durationSecs * 1000));
 
-        // A separate child widget for the star, same as JellyfinTab's rows -
-        // keeps the tap-to-favourite from also triggering the row's own
-        // itemClicked (which starts playback).
-        QWidget *row = new QWidget(this->results_widget);
-        QHBoxLayout *row_layout = new QHBoxLayout(row);
-        row_layout->setContentsMargins(8, 4, 8, 4);
+        // i.ytimg.com/vi/<id>/mqdefault.jpg is a stable, well-known YouTube
+        // thumbnail URL that exists for every video regardless of what
+        // yt-dlp's search response happens to report - no need to depend on
+        // its thumbnails array.
+        QToolButton *tile = this->arbiter.forge().media_tile(text, QString("https://i.ytimg.com/vi/%1/mqdefault.jpg").arg(video.id));
+        connect(tile, &QToolButton::clicked, [this, i] { this->play_from(i); });
 
-        QLabel *title = new QLabel(text, row);
-        row_layout->addWidget(title, 1);
+        // Star overlays the tile's top-right corner - see the equivalent
+        // comment in JellyfinTab::populate().
+        QWidget *cell = new QWidget(grid_widget);
+        QGridLayout *cell_layout = new QGridLayout(cell);
+        cell_layout->setContentsMargins(0, 0, 0, 0);
+        cell_layout->addWidget(tile, 0, 0);
 
-        QPushButton *star = new QPushButton(row);
+        QPushButton *star = new QPushButton(cell);
         star->setFlat(true);
         star->setCheckable(true);
         star->setChecked(this->arbiter.system().youtube.is_favorite(video.id));
@@ -1317,13 +1344,13 @@ void YouTubeTab::populate(QList<YouTube::Video> results)
         connect(star, &QPushButton::clicked, [this, video_copy](bool checked) {
             this->arbiter.system().youtube.set_favorite(video_copy.id, checked, video_copy);
         });
-        row_layout->addWidget(star);
+        cell_layout->addWidget(star, 0, 0, Qt::AlignTop | Qt::AlignRight);
 
-        QListWidgetItem *item = new QListWidgetItem(this->results_widget);
-        item->setData(Qt::UserRole, i);
-        item->setSizeHint(row->sizeHint());
-        this->results_widget->setItemWidget(item, row);
+        grid->addWidget(cell, i / columns, i % columns);
     }
+
+    container_layout->addWidget(grid_widget);
+    static_cast<QVBoxLayout *>(container_layout)->addStretch();
 }
 
 void YouTubeTab::play_from(int index)
@@ -1349,7 +1376,7 @@ QWidget *YouTubeTab::header_widget()
     back_button->hide();
     connect(back_button, &QPushButton::clicked, [this] {
         this->player->pause();
-        this->content_stack->setCurrentWidget(this->results_widget);
+        this->content_stack->setCurrentWidget(this->results_area);
     });
     connect(this->content_stack, &QStackedWidget::currentChanged, [this, back_button](int index) {
         back_button->setVisible(this->content_stack->widget(index) == this->video_widget);

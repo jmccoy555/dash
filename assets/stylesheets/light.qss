@@ -112,6 +112,23 @@ QPushButton#FullscreenBar {
     margin: 2px;
 }
 
+QToolButton {
+    color: rgba(0, 0, 0, 222);
+    background-color: rgb(212, 212, 212);
+    border: none;
+    border-radius: 8px;
+    padding: 8px;
+}
+
+QToolButton:pressed {
+    background-color: rgba(0, 0, 0, 25);
+}
+
+QToolButton:checked {
+    color: rgba(255, 255, 255, 222);
+    background-color: palette(base);
+}
+
 QFrame[frameShape="4"][frameShadow="16"],
 QFrame[frameShape="5"][frameShadow="16"] {
     color: rgba(0, 0, 0, 31);
