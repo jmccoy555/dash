@@ -18,6 +18,7 @@
 #include "app/config.hpp"
 #include "app/pages/page.hpp"
 #include "app/services/jellyfin.hpp"
+#include "app/services/youtube.hpp"
 #include "app/widgets/selector.hpp"
 #include "app/widgets/tuner.hpp"
 
@@ -164,6 +165,36 @@ class JellyfinTab : public QWidget {
     QWidget *seek_widget();
     QWidget *controls_widget();
     QWidget *settings_dialog_body();
+};
+
+class YouTubeTab : public QWidget {
+    Q_OBJECT
+
+   public:
+    YouTubeTab(Arbiter &arbiter, QWidget *parent = nullptr);
+
+   private:
+    Arbiter &arbiter;
+    QMediaPlayer *player;
+    QStackedWidget *content_stack;  // swaps between results_widget (search results) and video_widget (playback)
+    QLineEdit *search_input;
+    QListWidget *results_widget;
+    QGraphicsScene *video_scene;
+    QGraphicsVideoItem *video_item;
+    DashcamVideoView *video_widget;
+    QLabel *status_label;
+
+    QList<YouTube::Video> current_results;
+    int now_playing_index = -1;
+    bool showing_favorites = false;  // so a favourite toggled while viewing the favourites list disappears immediately
+
+    void search();
+    void show_favorites();
+    void populate(QList<YouTube::Video> results);
+    void play_from(int index);
+    QWidget *header_widget();
+    QWidget *seek_widget();
+    QWidget *controls_widget();
 };
 
 // QVideoWidget renders through a native (X11) overlay window on the

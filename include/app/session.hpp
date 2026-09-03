@@ -25,6 +25,7 @@
 #include "app/services/bluetooth.hpp"
 #include "app/services/clock.hpp"
 #include "app/services/jellyfin.hpp"
+#include "app/services/youtube.hpp"
 #include "app/services/server.hpp"
 #include "app/widgets/fullscreen_toggler.hpp"
 #include "AAHandler.hpp"
@@ -148,6 +149,7 @@ class Session {
         Server server;
         Bluetooth bluetooth;
         Jellyfin jellyfin;
+        YouTube youtube;
         Brightness brightness;
         uint8_t volume;
 

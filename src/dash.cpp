@@ -7,6 +7,12 @@
 
 int main(int argc, char *argv[])
 {
+    // Must be set before QApplication exists - it's read once, while Qt sets
+    // up the platform input context. Nothing else in the app touches text
+    // input directly; any QLineEdit/QTextEdit gaining focus is enough for
+    // Qt to pop the keyboard up and down on its own.
+    qputenv("QT_IM_MODULE", "qtvirtualkeyboard");
+
     QApplication dash(argc, argv);
 
     dash.setOrganizationName("openDsh");

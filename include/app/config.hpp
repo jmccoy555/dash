@@ -101,6 +101,13 @@ class Config : public QObject {
         this->settings.setValue("Pages/Media/Jellyfin/offline_dir", this->jellyfin_offline_dir);
     }
 
+    inline QString get_youtube_cache_dir() { return this->youtube_cache_dir; }
+    inline void set_youtube_cache_dir(QString cache_dir)
+    {
+        this->youtube_cache_dir = cache_dir;
+        this->settings.setValue("Pages/Media/YouTube/cache_dir", this->youtube_cache_dir);
+    }
+
     inline bool get_si_units() { return this->si_units; }
     inline void set_si_units(bool si_units)
     {
@@ -236,6 +243,7 @@ class Config : public QObject {
     QString jellyfin_user_id;
     QString jellyfin_device_id;
     QString jellyfin_offline_dir;
+    QString youtube_cache_dir;
     bool si_units;
     ICANBus::VehicleBusType vehicle_can_bus;
     QString vehicle_interface;

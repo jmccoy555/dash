@@ -38,6 +38,7 @@ void MediaPage::init()
     this->addTab(new BluetoothPlayerTab(this->arbiter, this), "Bluetooth");
     this->addTab(new LocalPlayerTab(this->arbiter, this), "Local");
     this->addTab(new JellyfinTab(this->arbiter, this), "Jellyfin");
+    this->addTab(new YouTubeTab(this->arbiter, this), "YouTube");
     this->addTab(new DashcamTab(this->arbiter, this), "Dashcam");
 }
 
@@ -1067,6 +1068,293 @@ QWidget *JellyfinTab::controls_widget()
         player->playlist()->next();
         player->play();
     });
+    layout->addWidget(forward_button);
+
+    return widget;
+}
+
+YouTubeTab::YouTubeTab(Arbiter &arbiter, QWidget *parent)
+    : QWidget(parent)
+    , arbiter(arbiter)
+    , player(new QMediaPlayer(this))
+    , content_stack(new QStackedWidget(this))
+    , search_input(nullptr)
+    , results_widget(new QListWidget(this))
+    , video_scene(new QGraphicsScene(this))
+    , video_item(new QGraphicsVideoItem())
+    , video_widget(new DashcamVideoView(this->video_scene, this->video_item, this))
+    , status_label(new QLabel(this))
+{
+    Session::Forge::to_touch_scroller(this->results_widget);
+    this->status_label->setAlignment(Qt::AlignCenter);
+
+    this->video_scene->setBackgroundBrush(Qt::black);
+    this->video_scene->addItem(this->video_item);
+    this->player->setVideoOutput(this->video_item);
+
+    // See the equivalent trio of connects in JellyfinTab for why all three -
+    // video_widget only gets real geometry once it's the stack's current
+    // widget, so a single videoAvailableChanged-triggered fit isn't enough.
+    connect(this->player, &QMediaPlayer::videoAvailableChanged, this->video_widget, [this](bool) {
+        this->video_widget->fitInView(this->video_item, Qt::KeepAspectRatioByExpanding);
+    });
+    connect(this->video_item, &QGraphicsVideoItem::nativeSizeChanged, this->video_widget, [this](const QSizeF &) {
+        this->video_widget->fitInView(this->video_item, Qt::KeepAspectRatioByExpanding);
+    });
+    connect(this->content_stack, &QStackedWidget::currentChanged, this->video_widget, [this](int index) {
+        if (this->content_stack->widget(index) == this->video_widget)
+            this->video_widget->fitInView(this->video_item, Qt::KeepAspectRatioByExpanding);
+    });
+
+    this->content_stack->addWidget(this->results_widget);
+    this->content_stack->addWidget(this->video_widget);
+
+    connect(this->results_widget, &QListWidget::itemClicked, [this](QListWidgetItem *item) {
+        this->play_from(item->data(Qt::UserRole).toInt());
+    });
+
+    connect(&this->arbiter.system().youtube, &YouTube::search_finished, this,
+            [this](QString, QList<YouTube::Video> results, QString error) {
+                if (!error.isEmpty()) {
+                    this->status_label->setText(error);
+                    return;
+                }
+                this->populate(results);
+                this->status_label->setText(results.isEmpty() ? "No results" : QString());
+            });
+
+    connect(&this->arbiter.system().youtube, &YouTube::download_progress, this, [this](QString, int percent) {
+        this->status_label->setText(QString("Downloading %1%…").arg(percent));
+    });
+
+    connect(&this->arbiter.system().youtube, &YouTube::ready_to_play, this, [this](QString, QString localPath) {
+        this->status_label->setText(QString());
+        this->player->setMedia(QMediaContent(QUrl::fromLocalFile(localPath)));
+        this->content_stack->setCurrentWidget(this->video_widget);
+        this->player->play();
+    });
+
+    connect(&this->arbiter.system().youtube, &YouTube::download_failed, this, [this](QString, QString error) {
+        this->status_label->setText(error);
+    });
+
+    // Un-favouriting while looking at the favourites list should drop the
+    // row immediately rather than leaving a stale star until the list is
+    // reopened.
+    connect(&this->arbiter.system().youtube, &YouTube::favorite_toggled, this, [this](QString, bool) {
+        if (this->showing_favorites)
+            this->show_favorites();
+    });
+
+    if (!this->arbiter.system().youtube.is_available())
+        this->status_label->setText("yt-dlp not installed");
+
+    QVBoxLayout *layout = new QVBoxLayout(this);
+    layout->addWidget(this->header_widget());
+    layout->addWidget(this->status_label);
+    layout->addWidget(this->content_stack, 1);
+    layout->addWidget(this->seek_widget());
+    layout->addWidget(this->controls_widget());
+}
+
+void YouTubeTab::search()
+{
+    QString query = this->search_input->text().trimmed();
+    if (query.isEmpty())
+        return;
+
+    this->showing_favorites = false;
+    this->status_label->setText("Searching…");
+    this->arbiter.system().youtube.search(query);
+}
+
+void YouTubeTab::show_favorites()
+{
+    this->showing_favorites = true;
+    QList<YouTube::Video> favorites = this->arbiter.system().youtube.favorites();
+    this->populate(favorites);
+    this->status_label->setText(favorites.isEmpty() ? "No favourites yet" : QString());
+}
+
+void YouTubeTab::populate(QList<YouTube::Video> results)
+{
+    this->current_results = results;
+    this->results_widget->clear();
+
+    for (int i = 0; i < results.size(); i++) {
+        const YouTube::Video &video = results[i];
+
+        QString text = video.uploader.isEmpty() ? video.title : QString("%1 — %2").arg(video.title, video.uploader);
+        if (video.durationSecs > 0)
+            text += QString("  (%1)").arg(LocalPlayerTab::durationFmt(video.durationSecs * 1000));
+
+        // A separate child widget for the star, same as JellyfinTab's rows -
+        // keeps the tap-to-favourite from also triggering the row's own
+        // itemClicked (which starts playback).
+        QWidget *row = new QWidget(this->results_widget);
+        QHBoxLayout *row_layout = new QHBoxLayout(row);
+        row_layout->setContentsMargins(8, 4, 8, 4);
+
+        QLabel *title = new QLabel(text, row);
+        row_layout->addWidget(title, 1);
+
+        QPushButton *star = new QPushButton(row);
+        star->setFlat(true);
+        star->setCheckable(true);
+        star->setChecked(this->arbiter.system().youtube.is_favorite(video.id));
+        this->arbiter.forge().iconize("favorite_border", "favorite", star, 20);
+        YouTube::Video video_copy = video;
+        connect(star, &QPushButton::clicked, [this, video_copy](bool checked) {
+            this->arbiter.system().youtube.set_favorite(video_copy.id, checked, video_copy);
+        });
+        row_layout->addWidget(star);
+
+        QListWidgetItem *item = new QListWidgetItem(this->results_widget);
+        item->setData(Qt::UserRole, i);
+        item->setSizeHint(row->sizeHint());
+        this->results_widget->setItemWidget(item, row);
+    }
+}
+
+void YouTubeTab::play_from(int index)
+{
+    if (index < 0 || index >= this->current_results.size())
+        return;
+
+    this->now_playing_index = index;
+    this->status_label->setText("Downloading…");
+    this->arbiter.system().youtube.play(this->current_results[index].id);
+}
+
+QWidget *YouTubeTab::header_widget()
+{
+    QWidget *widget = new QWidget(this);
+    QHBoxLayout *layout = new QHBoxLayout(widget);
+
+    // Same idea as JellyfinTab's back button - only relevant once a video is
+    // playing, pauses and swaps back to the results list.
+    QPushButton *back_button = new QPushButton(widget);
+    back_button->setFlat(true);
+    this->arbiter.forge().iconize("arrow_left", back_button, 24);
+    back_button->hide();
+    connect(back_button, &QPushButton::clicked, [this] {
+        this->player->pause();
+        this->content_stack->setCurrentWidget(this->results_widget);
+    });
+    connect(this->content_stack, &QStackedWidget::currentChanged, [this, back_button](int index) {
+        back_button->setVisible(this->content_stack->widget(index) == this->video_widget);
+    });
+    layout->addWidget(back_button);
+
+    this->search_input = new QLineEdit(widget);
+    this->search_input->setContextMenuPolicy(Qt::NoContextMenu);
+    this->search_input->setFont(this->arbiter.forge().font(16));
+    this->search_input->setAlignment(Qt::AlignCenter);
+    this->search_input->setPlaceholderText("Search YouTube");
+    connect(this->search_input, &QLineEdit::returnPressed, [this] { this->search(); });
+    layout->addWidget(this->search_input, 1);
+
+    QPushButton *search_button = new QPushButton(widget);
+    search_button->setFlat(true);
+    this->arbiter.forge().iconize("search", search_button, 24);
+    connect(search_button, &QPushButton::clicked, [this] { this->search(); });
+    layout->addWidget(search_button);
+
+    QPushButton *favorites_button = new QPushButton(widget);
+    favorites_button->setFlat(true);
+    this->arbiter.forge().iconize("favorite_border", favorites_button, 24);
+    connect(favorites_button, &QPushButton::clicked, [this] { this->show_favorites(); });
+    layout->addWidget(favorites_button);
+
+    // Same fullscreen mechanism as JellyfinTab - see there for why it's
+    // just arbiter.set_fullscreen() and not anything video-specific.
+    QPushButton *fullscreen_button = new QPushButton(widget);
+    fullscreen_button->setFlat(true);
+    fullscreen_button->setCheckable(true);
+    fullscreen_button->setChecked(this->arbiter.layout().fullscreen.enabled);
+    this->arbiter.forge().iconize("fullscreen", "fullscreen_exit", fullscreen_button, 24);
+    fullscreen_button->hide();
+    connect(fullscreen_button, &QPushButton::clicked, [this](bool checked) { this->arbiter.set_fullscreen(checked); });
+    connect(&this->arbiter, &Arbiter::fullscreen_changed, fullscreen_button, [fullscreen_button](bool enabled) {
+        fullscreen_button->setChecked(enabled);
+    });
+    connect(this->content_stack, &QStackedWidget::currentChanged, [this, fullscreen_button](int index) {
+        fullscreen_button->setVisible(this->content_stack->widget(index) == this->video_widget);
+    });
+    layout->addWidget(fullscreen_button);
+
+    return widget;
+}
+
+QWidget *YouTubeTab::seek_widget()
+{
+    QWidget *widget = new QWidget(this);
+    QHBoxLayout *layout = new QHBoxLayout(widget);
+
+    ClickableSlider *slider = new ClickableSlider(Qt::Orientation::Horizontal, widget);
+    slider->setTracking(false);
+    slider->setRange(0, 0);
+    QLabel *value = new QLabel(LocalPlayerTab::durationFmt(slider->value()), widget);
+    // Unlike JellyfinTab, this always seeks a genuinely local file (already
+    // downloaded before playback ever starts), so plain setPosition() here
+    // is the proven-reliable path, not the broken network-stream case.
+    connect(slider, &QSlider::sliderReleased, [player = this->player, slider]() { player->setPosition(slider->sliderPosition()); });
+    connect(slider, &QSlider::sliderMoved,
+            [value](int position) { value->setText(LocalPlayerTab::durationFmt(position)); });
+    connect(this->player, &QMediaPlayer::durationChanged, [slider](qint64 duration) {
+        slider->setValue(0);
+        slider->setRange(0, duration);
+    });
+    connect(this->player, &QMediaPlayer::positionChanged, [slider, value](qint64 position) {
+        if (!slider->isSliderDown()) {
+            slider->setValue(position);
+            value->setText(LocalPlayerTab::durationFmt(position));
+        }
+    });
+
+    layout->addStretch(4);
+    layout->addWidget(slider, 28);
+    layout->addWidget(value, 3);
+    layout->addStretch(1);
+
+    return widget;
+}
+
+QWidget *YouTubeTab::controls_widget()
+{
+    QWidget *widget = new QWidget(this);
+    QHBoxLayout *layout = new QHBoxLayout(widget);
+
+    // Prev/next step through the current search results by index rather
+    // than a QMediaPlaylist - each result needs its own on-demand download,
+    // there's no queue of ready-to-play URLs to walk like Jellyfin has.
+    QPushButton *previous_button = new QPushButton(widget);
+    previous_button->setFlat(true);
+    this->arbiter.forge().iconize("skip_previous", previous_button, 56);
+    connect(previous_button, &QPushButton::clicked, [this] { this->play_from(this->now_playing_index - 1); });
+    layout->addWidget(previous_button);
+
+    QPushButton *play_button = new QPushButton(widget);
+    play_button->setFlat(true);
+    play_button->setCheckable(true);
+    play_button->setChecked(false);
+    this->arbiter.forge().iconize("play", "pause", play_button, 56);
+    connect(play_button, &QPushButton::clicked, [player = this->player, play_button](bool checked = false) {
+        play_button->setChecked(!checked);
+        if (checked)
+            player->play();
+        else
+            player->pause();
+    });
+    connect(this->player, &QMediaPlayer::stateChanged, [play_button](QMediaPlayer::State state) {
+        play_button->setChecked(state == QMediaPlayer::PlayingState);
+    });
+    layout->addWidget(play_button);
+
+    QPushButton *forward_button = new QPushButton(widget);
+    forward_button->setFlat(true);
+    this->arbiter.forge().iconize("skip_next", forward_button, 56);
+    connect(forward_button, &QPushButton::clicked, [this] { this->play_from(this->now_playing_index + 1); });
     layout->addWidget(forward_button);
 
     return widget;
