@@ -63,6 +63,15 @@ WelleIo::WelleIo()
     , dwell_ticks(0)
     , wait_ticks(0)
 {
+    // A full band scan takes a while (CHANNEL_DWELL_TICKS per channel across
+    // the whole of BAND3_CHANNELS) and this plugin is recreated fresh every
+    // time the app starts, so without this the station list sits empty for
+    // over a minute on every single boot. Seeding from whatever was found
+    // last session means the list is immediately usable while the scan
+    // below silently keeps it current - same stale-while-revalidate idea as
+    // the Jellyfin browse cache.
+    this->load_cached_services();
+
     this->start_discovery();
 
     connect(&this->poll_timer, &QTimer::timeout, this, &WelleIo::tick);
@@ -93,6 +102,12 @@ void WelleIo::rescan()
 {
     this->scan_queue = BAND3_CHANNELS;
     this->aggregated_services.clear();
+    // An explicit rescan is a deliberate "start over" (e.g. the user has
+    // moved somewhere with a different set of ensembles) - keeping the old
+    // cache around would just mean stale entries linger in the list (and
+    // could point play() at the wrong channel via the label-dedup rule)
+    // until the new scan happens to re-cover the same ground.
+    this->settings.remove("cached_services");
     this->is_scanning = true;
     this->start_discovery();
     this->tune(this->scan_queue.takeFirst());
@@ -159,6 +174,30 @@ QString WelleIo::now_playing()
     }
 
     return QString();
+}
+
+void WelleIo::load_cached_services()
+{
+    int size = this->settings.beginReadArray("cached_services");
+    for (int i = 0; i < size; i++) {
+        this->settings.setArrayIndex(i);
+        QString id = this->settings.value("id").toString();
+        QString label = this->settings.value("label").toString();
+        if (!id.isEmpty() && !label.isEmpty())
+            this->aggregated_services.append({id, label});
+    }
+    this->settings.endArray();
+}
+
+void WelleIo::save_cached_services()
+{
+    this->settings.beginWriteArray("cached_services");
+    for (int i = 0; i < this->aggregated_services.size(); i++) {
+        this->settings.setArrayIndex(i);
+        this->settings.setValue("id", this->aggregated_services[i].id);
+        this->settings.setValue("label", this->aggregated_services[i].label);
+    }
+    this->settings.endArray();
 }
 
 void WelleIo::start_discovery()
@@ -269,6 +308,7 @@ void WelleIo::tick_discovery()
         QJsonObject root = QJsonDocument::fromJson(reply->readAll()).object();
         QJsonArray services_arr = root["services"].toArray();
 
+        bool changed = false;
         for (const QJsonValue &value : services_arr) {
             QJsonObject service = value.toObject();
             // sid comes back as a hex string (e.g. "0xc787"), not a JSON
@@ -285,7 +325,10 @@ void WelleIo::tick_discovery()
             bool known = false;
             for (DabService &existing : this->aggregated_services) {
                 if (existing.id == id) {
-                    existing.label = label;
+                    if (existing.label != label) {
+                        existing.label = label;
+                        changed = true;
+                    }
                     known = true;
                     break;
                 }
@@ -299,9 +342,18 @@ void WelleIo::tick_discovery()
                     break;
                 }
             }
-            if (!known)
+            if (!known) {
                 this->aggregated_services.append({id, label});
+                changed = true;
+            }
         }
+
+        // Cheap enough to just check per-tick while scanning rather than
+        // debouncing - this only actually writes when a station was added
+        // or relabelled, which per channel happens a handful of times, not
+        // once per tick.
+        if (changed)
+            this->save_cached_services();
     });
 
     if (this->dwell_ticks >= CHANNEL_DWELL_TICKS) {

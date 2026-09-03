@@ -49,6 +49,9 @@ class WelleIo : public QObject, DabPlugin {
 
     QList<DabService> aggregated_services;
 
+    void load_cached_services();  // seeds aggregated_services from the last session's scan - see constructor
+    void save_cached_services();
+
     void stop_player();
     void start_discovery();
     void start_playback_backend(QString channel);
