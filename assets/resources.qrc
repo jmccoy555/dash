@@ -26,6 +26,10 @@
         <file>icons/bluetooth_searching.svg</file>
         <file>icons/playlist_add_check.svg</file>
         <file>icons/playlist_add.svg</file>
+        <file>icons/favorite.svg</file>
+        <file>icons/favorite_border.svg</file>
+        <file>icons/fullscreen.svg</file>
+        <file>icons/fullscreen_exit.svg</file>
         <file>icons/close.svg</file>
         <file>icons/power_settings_new.svg</file>
         <file>icons/arrow_left.svg</file>

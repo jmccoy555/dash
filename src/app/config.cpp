@@ -15,6 +15,11 @@ Config::Config()
     this->radio_plugin = this->settings.value("Pages/Media/Radio/plugin", "unloader").toString();
     this->dab_plugin = this->settings.value("Pages/Media/Dab/plugin", "unloader").toString();
     this->media_home = this->settings.value("Pages/Media/Local/home", QStandardPaths::writableLocation(QStandardPaths::MusicLocation)).toString();
+    this->jellyfin_server_url = this->settings.value("Pages/Media/Jellyfin/server_url", QString()).toString();
+    this->jellyfin_access_token = this->settings.value("Pages/Media/Jellyfin/access_token", QString()).toString();
+    this->jellyfin_user_id = this->settings.value("Pages/Media/Jellyfin/user_id", QString()).toString();
+    this->jellyfin_device_id = this->settings.value("Pages/Media/Jellyfin/device_id", QString()).toString();
+    this->jellyfin_offline_dir = this->settings.value("Pages/Media/Jellyfin/offline_dir", QStandardPaths::writableLocation(QStandardPaths::MusicLocation) + "/jellyfin").toString();
     this->si_units = this->settings.value("Pages/Vehicle/si_units", false).toBool();
     // 0 - SocketCAN
     // 1 - Elm 327 USB

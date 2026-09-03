@@ -17,10 +17,12 @@
 
 #include "app/config.hpp"
 #include "app/pages/page.hpp"
+#include "app/services/jellyfin.hpp"
 #include "app/widgets/selector.hpp"
 #include "app/widgets/tuner.hpp"
 
 class Arbiter;
+class DashcamVideoView;
 
 // Plain QSlider only nudges by a page-step when you click/tap the groove
 // rather than jumping to that position - drag-to-seek still works, but a
@@ -130,6 +132,38 @@ class LocalPlayerTab : public QWidget {
     Config *config;
     QMediaPlayer *player;
     QLabel *path_label;
+};
+
+class JellyfinTab : public QWidget {
+    Q_OBJECT
+
+   public:
+    JellyfinTab(Arbiter &arbiter, QWidget *parent = nullptr);
+
+   private:
+    Arbiter &arbiter;
+    Config *config;
+    QMediaPlayer *player;
+    QStackedWidget *content_stack;  // swaps between browser_widget (lists) and video_widget (Movie/Episode playback)
+    QListWidget *browser_widget;
+    QGraphicsScene *video_scene;
+    QGraphicsVideoItem *video_item;
+    DashcamVideoView *video_widget;
+    QLabel *breadcrumb_label;
+    QLabel *status_label;
+    QLineEdit *username_input;
+    QLineEdit *password_input;
+
+    QList<Jellyfin::Item> nav_stack;      // breadcrumb trail (root not included)
+    QList<Jellyfin::Item> current_items;  // whatever's currently listed - drives playlist build + prev/next
+
+    void navigate(QString parentId, QString label, bool push);
+    void populate(QList<Jellyfin::Item> items);
+    void play_from(int index);
+    QWidget *header_widget();
+    QWidget *seek_widget();
+    QWidget *controls_widget();
+    QWidget *settings_dialog_body();
 };
 
 // QVideoWidget renders through a native (X11) overlay window on the

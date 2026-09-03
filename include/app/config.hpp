@@ -66,6 +66,41 @@ class Config : public QObject {
         this->settings.setValue("Pages/Media/Local/home", this->media_home);
     }
 
+    inline QString get_jellyfin_server_url() { return this->jellyfin_server_url; }
+    inline void set_jellyfin_server_url(QString server_url)
+    {
+        this->jellyfin_server_url = server_url;
+        this->settings.setValue("Pages/Media/Jellyfin/server_url", this->jellyfin_server_url);
+    }
+
+    inline QString get_jellyfin_access_token() { return this->jellyfin_access_token; }
+    inline void set_jellyfin_access_token(QString access_token)
+    {
+        this->jellyfin_access_token = access_token;
+        this->settings.setValue("Pages/Media/Jellyfin/access_token", this->jellyfin_access_token);
+    }
+
+    inline QString get_jellyfin_user_id() { return this->jellyfin_user_id; }
+    inline void set_jellyfin_user_id(QString user_id)
+    {
+        this->jellyfin_user_id = user_id;
+        this->settings.setValue("Pages/Media/Jellyfin/user_id", this->jellyfin_user_id);
+    }
+
+    inline QString get_jellyfin_device_id() { return this->jellyfin_device_id; }
+    inline void set_jellyfin_device_id(QString device_id)
+    {
+        this->jellyfin_device_id = device_id;
+        this->settings.setValue("Pages/Media/Jellyfin/device_id", this->jellyfin_device_id);
+    }
+
+    inline QString get_jellyfin_offline_dir() { return this->jellyfin_offline_dir; }
+    inline void set_jellyfin_offline_dir(QString offline_dir)
+    {
+        this->jellyfin_offline_dir = offline_dir;
+        this->settings.setValue("Pages/Media/Jellyfin/offline_dir", this->jellyfin_offline_dir);
+    }
+
     inline bool get_si_units() { return this->si_units; }
     inline void set_si_units(bool si_units)
     {
@@ -196,6 +231,11 @@ class Config : public QObject {
     QString radio_plugin;
     QString dab_plugin;
     QString media_home;
+    QString jellyfin_server_url;
+    QString jellyfin_access_token;
+    QString jellyfin_user_id;
+    QString jellyfin_device_id;
+    QString jellyfin_offline_dir;
     bool si_units;
     ICANBus::VehicleBusType vehicle_can_bus;
     QString vehicle_interface;

@@ -95,6 +95,7 @@ target_include_directories(dash SYSTEM PRIVATE
     ${Qt5Svg_INCLUDE_DIRS}
     ${Qt5Xml_INCLUDE_DIRS}
     ${Qt5WebSockets_INCLUDE_DIRS}
+    ${Qt5Network_INCLUDE_DIRS}
     ${Qt5DBus_INCLUDE_DIRS}
     ${Qt5SerialBus_INCLUDE_DIRS}
     ${Qt5SerialPort_INCLUDE_DIRS}
@@ -127,6 +128,7 @@ target_link_libraries(dash
     ${Qt5Xml_LIBRARIES}
     ${Qt5DBus_LIBRARIES}
     ${Qt5WebSockets_LIBRARIES}
+    ${Qt5Network_LIBRARIES}
     ${Qt5SerialBus_LIBRARIES}
     ${Qt5SerialPort_LIBRARIES}
     ${Qt5Multimedia_LIBRARIES}

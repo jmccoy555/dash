@@ -37,6 +37,7 @@ void MediaPage::init()
     this->addTab(new DabPlayerTab(this->arbiter, this), "DAB");
     this->addTab(new BluetoothPlayerTab(this->arbiter, this), "Bluetooth");
     this->addTab(new LocalPlayerTab(this->arbiter, this), "Local");
+    this->addTab(new JellyfinTab(this->arbiter, this), "Jellyfin");
     this->addTab(new DashcamTab(this->arbiter, this), "Dashcam");
 }
 
@@ -655,6 +656,420 @@ void LocalPlayerTab::populate_tracks(QString path, QListWidget *tracks_widget)
         QListWidgetItem *item = new QListWidgetItem(fileNameNoExt, tracks_widget);
         item->setData(Qt::UserRole, QVariant(path + '/' + track));
     }
+}
+
+JellyfinTab::JellyfinTab(Arbiter &arbiter, QWidget *parent)
+    : QWidget(parent)
+    , arbiter(arbiter)
+    , config(Config::get_instance())
+    , player(new QMediaPlayer(this))
+    , content_stack(new QStackedWidget(this))
+    , browser_widget(new QListWidget(this))
+    , video_scene(new QGraphicsScene(this))
+    , video_item(new QGraphicsVideoItem())
+    , video_widget(new DashcamVideoView(this->video_scene, this->video_item, this))
+    , breadcrumb_label(new QLabel("Jellyfin", this))
+    , status_label(new QLabel(this))
+    , username_input(nullptr)
+    , password_input(nullptr)
+{
+    Session::Forge::to_touch_scroller(this->browser_widget);
+    this->status_label->setAlignment(Qt::AlignCenter);
+
+    this->video_scene->setBackgroundBrush(Qt::black);
+    this->video_scene->addItem(this->video_item);
+    this->player->setVideoOutput(this->video_item);  // harmless for audio-only playback, just renders nothing
+
+    connect(this->player, &QMediaPlayer::videoAvailableChanged, this->video_widget, [this](bool) {
+        this->video_widget->fitInView(this->video_item, Qt::KeepAspectRatioByExpanding);
+    });
+    // videoAvailableChanged alone isn't enough here - video_widget lives in a
+    // QStackedWidget and only gets given real geometry once it becomes the
+    // current widget, which can happen after that signal fires. Both of
+    // these re-run the fit once the widget's actual final size/native video
+    // size are known, whichever lands second.
+    connect(this->video_item, &QGraphicsVideoItem::nativeSizeChanged, this->video_widget, [this](const QSizeF &) {
+        this->video_widget->fitInView(this->video_item, Qt::KeepAspectRatioByExpanding);
+    });
+    connect(this->content_stack, &QStackedWidget::currentChanged, this->video_widget, [this](int index) {
+        if (this->content_stack->widget(index) == this->video_widget)
+            this->video_widget->fitInView(this->video_item, Qt::KeepAspectRatioByExpanding);
+    });
+
+    this->content_stack->addWidget(this->browser_widget);
+    this->content_stack->addWidget(this->video_widget);
+
+    QMediaPlaylist *playlist = new QMediaPlaylist(this->player);
+    playlist->setPlaybackMode(QMediaPlaylist::Loop);
+    this->player->setPlaylist(playlist);
+
+    connect(this->browser_widget, &QListWidget::itemClicked, [this](QListWidgetItem *list_item) {
+        int index = list_item->data(Qt::UserRole).toInt();
+        if (index == -1) {
+            this->navigate(QString(), QString(), false);
+            return;
+        }
+        if (index < 0 || index >= this->current_items.size())
+            return;
+
+        const Jellyfin::Item &item = this->current_items[index];
+        if (item.type == Jellyfin::ItemType::Container)
+            this->navigate(item.id, item.name, true);
+        else
+            this->play_from(index);
+    });
+
+    connect(&this->arbiter.system().jellyfin, &Jellyfin::items_ready, this, [this](QString parentId, QList<Jellyfin::Item> items) {
+        // A response for a level the user has since navigated away from -
+        // ignore it rather than showing stale data.
+        QString expected = this->nav_stack.isEmpty() ? QString() : this->nav_stack.last().id;
+        if (parentId != expected)
+            return;
+
+        this->populate(items);
+        this->status_label->setText(QString());
+    });
+
+    connect(&this->arbiter.system().jellyfin, &Jellyfin::auth_required, this, [this] {
+        this->status_label->setText("Please log in again (see settings)");
+    });
+
+    connect(&this->arbiter.system().jellyfin, &Jellyfin::sync_progress, this, [this](int done, int total, QString name) {
+        this->status_label->setText(QString("Syncing %1/%2: %3").arg(done).arg(total).arg(name));
+    });
+
+    connect(&this->arbiter.system().jellyfin, &Jellyfin::sync_finished, this, [this](int downloaded, int failed) {
+        this->status_label->setText(failed > 0
+            ? QString("Synced %1 item(s), %2 failed/skipped").arg(downloaded).arg(failed)
+            : QString("Synced %1 item(s)").arg(downloaded));
+        QTimer::singleShot(4000, this, [this] { this->status_label->setText(QString()); });
+    });
+
+    QVBoxLayout *layout = new QVBoxLayout(this);
+    layout->addWidget(this->header_widget());
+    layout->addWidget(this->status_label);
+    layout->addWidget(this->content_stack, 1);
+    layout->addWidget(this->seek_widget());
+    layout->addWidget(this->controls_widget());
+
+    if (this->arbiter.system().jellyfin.is_authenticated())
+        this->arbiter.system().jellyfin.browse(QString());
+    else
+        this->status_label->setText("Not logged in - see settings");
+}
+
+void JellyfinTab::navigate(QString parentId, QString label, bool push)
+{
+    if (push) {
+        Jellyfin::Item crumb;
+        crumb.id = parentId;
+        crumb.name = label;
+        this->nav_stack.append(crumb);
+    } else if (!this->nav_stack.isEmpty()) {
+        this->nav_stack.removeLast();
+    }
+
+    QStringList crumbs = {"Jellyfin"};
+    for (const Jellyfin::Item &crumb : this->nav_stack)
+        crumbs.append(crumb.name);
+    this->breadcrumb_label->setText(crumbs.join(" › "));
+
+    QString target = this->nav_stack.isEmpty() ? QString() : this->nav_stack.last().id;
+    this->status_label->setText("Loading…");
+    this->arbiter.system().jellyfin.browse(target);
+}
+
+void JellyfinTab::populate(QList<Jellyfin::Item> items)
+{
+    this->current_items = items;
+    this->browser_widget->clear();
+
+    if (!this->nav_stack.isEmpty()) {
+        QListWidgetItem *up = new QListWidgetItem("↲", this->browser_widget);
+        up->setData(Qt::UserRole, -1);
+    }
+
+    for (int i = 0; i < items.size(); i++) {
+        const Jellyfin::Item &item = items[i];
+
+        if (item.type == Jellyfin::ItemType::Container) {
+            QListWidgetItem *list_item = new QListWidgetItem(item.name, this->browser_widget);
+            list_item->setData(Qt::UserRole, i);
+            continue;
+        }
+
+        // Audio/Video rows get a favourite-toggle star alongside the title -
+        // a separate child widget so tapping it doesn't also trigger the
+        // row's own itemClicked (which starts playback).
+        QWidget *row = new QWidget(this->browser_widget);
+        QHBoxLayout *row_layout = new QHBoxLayout(row);
+        row_layout->setContentsMargins(8, 4, 8, 4);
+
+        QLabel *title = new QLabel(item.name, row);
+        row_layout->addWidget(title, 1);
+
+        QPushButton *star = new QPushButton(row);
+        star->setFlat(true);
+        star->setCheckable(true);
+        star->setChecked(item.isFavorite);
+        this->arbiter.forge().iconize("favorite_border", "favorite", star, 20);
+        QString item_id = item.id;
+        connect(star, &QPushButton::clicked, [this, item_id](bool checked) {
+            this->arbiter.system().jellyfin.toggle_favorite(item_id, checked);
+        });
+        row_layout->addWidget(star);
+
+        QListWidgetItem *list_item = new QListWidgetItem(this->browser_widget);
+        list_item->setData(Qt::UserRole, i);
+        list_item->setSizeHint(row->sizeHint());
+        this->browser_widget->setItemWidget(list_item, row);
+    }
+}
+
+void JellyfinTab::play_from(int index)
+{
+    if (index < 0 || index >= this->current_items.size())
+        return;
+
+    const Jellyfin::Item &target = this->current_items[index];
+    if (target.type == Jellyfin::ItemType::Container)
+        return;
+
+    QMediaPlaylist *playlist = this->player->playlist();
+    playlist->clear();
+
+    // Playlist only ever spans one item type at a time - a video queued
+    // straight after an audio track (e.g. Favourites mixing both) would
+    // otherwise dump straight from a movie into an mp3.
+    int start_position = -1;
+    for (const Jellyfin::Item &item : this->current_items) {
+        if (item.type != target.type)
+            continue;
+
+        if (item.id == target.id)
+            start_position = playlist->mediaCount();
+
+        // Plays from disk transparently when an item has been synced for
+        // offline playback - this is the only place that distinction is
+        // made, no separate "offline mode" toggle anywhere.
+        QString cached = this->arbiter.system().jellyfin.cached_path(item.id);
+        QUrl url = cached.isEmpty() ? this->arbiter.system().jellyfin.stream_url(item.id, item.type) : QUrl::fromLocalFile(cached);
+        playlist->addMedia(QMediaContent(url));
+    }
+
+    if (start_position >= 0)
+        playlist->setCurrentIndex(start_position);
+
+    this->content_stack->setCurrentWidget(target.type == Jellyfin::ItemType::Video ? (QWidget *)this->video_widget : (QWidget *)this->browser_widget);
+    this->player->play();
+}
+
+QWidget *JellyfinTab::header_widget()
+{
+    QWidget *widget = new QWidget(this);
+    QHBoxLayout *layout = new QHBoxLayout(widget);
+
+    Dialog *dialog = new Dialog(this->arbiter, true, this->window());
+    dialog->set_body(this->settings_dialog_body());
+
+    QPushButton *settings_button = new QPushButton(widget);
+    settings_button->setFlat(true);
+    this->arbiter.forge().iconize("settings", settings_button, 24);
+    connect(settings_button, &QPushButton::clicked, [dialog] { dialog->open(); });
+
+    this->breadcrumb_label->setAlignment(Qt::AlignCenter);
+
+    // Only relevant once a video is playing (browsing is otherwise always
+    // showing already) - pauses playback and swaps back to the list rather
+    // than leaving a movie running behind a view the user can't see.
+    QPushButton *back_button = new QPushButton(widget);
+    back_button->setFlat(true);
+    this->arbiter.forge().iconize("arrow_left", back_button, 24);
+    back_button->hide();
+    connect(back_button, &QPushButton::clicked, [this] {
+        this->player->pause();
+        this->content_stack->setCurrentWidget(this->browser_widget);
+    });
+    connect(this->content_stack, &QStackedWidget::currentChanged, [this, back_button](int index) {
+        back_button->setVisible(this->content_stack->widget(index) == this->video_widget);
+    });
+
+    // Same visibility rule as back_button - only makes sense while video is
+    // showing. Drives the app's existing fullscreen mechanism (the same one
+    // behind the rail's long-press gesture and the "Toggle Fullscreen"
+    // action), which hides the icon rail/sidebar for more screen width -
+    // nothing video-specific needed here.
+    QPushButton *fullscreen_button = new QPushButton(widget);
+    fullscreen_button->setFlat(true);
+    fullscreen_button->setCheckable(true);
+    fullscreen_button->setChecked(this->arbiter.layout().fullscreen.enabled);
+    this->arbiter.forge().iconize("fullscreen", "fullscreen_exit", fullscreen_button, 24);
+    fullscreen_button->hide();
+    connect(fullscreen_button, &QPushButton::clicked, [this](bool checked) { this->arbiter.set_fullscreen(checked); });
+    connect(&this->arbiter, &Arbiter::fullscreen_changed, fullscreen_button, [fullscreen_button](bool enabled) {
+        fullscreen_button->setChecked(enabled);
+    });
+    connect(this->content_stack, &QStackedWidget::currentChanged, [this, fullscreen_button](int index) {
+        fullscreen_button->setVisible(this->content_stack->widget(index) == this->video_widget);
+    });
+
+    layout->addWidget(back_button);
+    layout->addWidget(settings_button);
+    layout->addWidget(this->breadcrumb_label, 1);
+    layout->addWidget(fullscreen_button);
+
+    return widget;
+}
+
+QWidget *JellyfinTab::settings_dialog_body()
+{
+    QWidget *widget = new QWidget(this);
+    QVBoxLayout *layout = new QVBoxLayout(widget);
+
+    QLineEdit *server_input = new QLineEdit(this->config->get_jellyfin_server_url(), widget);
+    server_input->setContextMenuPolicy(Qt::NoContextMenu);
+    server_input->setFont(this->arbiter.forge().font(16));
+    server_input->setAlignment(Qt::AlignCenter);
+    server_input->setPlaceholderText("Server URL");
+    connect(server_input, &QLineEdit::textEdited, [this](QString text) { this->config->set_jellyfin_server_url(text); });
+    layout->addWidget(server_input);
+
+    this->username_input = new QLineEdit(widget);
+    this->username_input->setContextMenuPolicy(Qt::NoContextMenu);
+    this->username_input->setFont(this->arbiter.forge().font(16));
+    this->username_input->setAlignment(Qt::AlignCenter);
+    this->username_input->setPlaceholderText("Username");
+    layout->addWidget(this->username_input);
+
+    this->password_input = new QLineEdit(widget);
+    this->password_input->setContextMenuPolicy(Qt::NoContextMenu);
+    this->password_input->setFont(this->arbiter.forge().font(16));
+    this->password_input->setAlignment(Qt::AlignCenter);
+    this->password_input->setEchoMode(QLineEdit::Password);
+    this->password_input->setPlaceholderText("Password");
+    layout->addWidget(this->password_input);
+
+    QLabel *login_status = new QLabel(widget);
+    login_status->setAlignment(Qt::AlignCenter);
+    layout->addWidget(login_status);
+
+    QPushButton *login_button = new QPushButton("Log in", widget);
+    connect(login_button, &QPushButton::clicked, [this, login_status] {
+        login_status->setText("Logging in…");
+        this->arbiter.system().jellyfin.authenticate(this->config->get_jellyfin_server_url(), this->username_input->text(), this->password_input->text());
+    });
+    layout->addWidget(login_button);
+
+    connect(&this->arbiter.system().jellyfin, &Jellyfin::auth_finished, this, [this, login_status](bool success, QString error) {
+        login_status->setText(success ? "Logged in" : error);
+        if (success)
+            this->navigate(QString(), QString(), false);
+    });
+
+    layout->addWidget(Session::Forge::br());
+
+    QPushButton *sync_button = new QPushButton("Sync favourites now", widget);
+    connect(sync_button, &QPushButton::clicked, [this, sync_button] {
+        sync_button->setEnabled(false);
+        this->arbiter.system().jellyfin.sync_favorites();
+    });
+    connect(&this->arbiter.system().jellyfin, &Jellyfin::sync_finished, this, [sync_button](int, int) {
+        sync_button->setEnabled(true);
+    });
+    layout->addWidget(sync_button);
+
+    QLabel *sync_note = new QLabel("Favourites also sync automatically every 30 minutes", widget);
+    sync_note->setAlignment(Qt::AlignCenter);
+    sync_note->setWordWrap(true);
+    layout->addWidget(sync_note);
+
+    return widget;
+}
+
+QWidget *JellyfinTab::seek_widget()
+{
+    QWidget *widget = new QWidget(this);
+    QHBoxLayout *layout = new QHBoxLayout(widget);
+
+    ClickableSlider *slider = new ClickableSlider(Qt::Orientation::Horizontal, widget);
+    slider->setTracking(false);
+    slider->setRange(0, 0);
+    QLabel *value = new QLabel(LocalPlayerTab::durationFmt(slider->value()), widget);
+    // Scrubbing a network video stream doesn't actually work on this device:
+    // isSeekable() reports true and setPosition() returns normally, but the
+    // position never moves - confirmed live, the hardware h264 decode
+    // pipeline silently drops the flushing seek. Restarting the stream at
+    // the target offset (Jellyfin's StartTimeTicks) was tried as a
+    // workaround but requires transcoding, which this device's Qt
+    // Multimedia/GStreamer pipeline then stalls on indefinitely (confirmed
+    // the server-side transcode itself produces valid output via curl - the
+    // hang is client-side). Left as a plain setPosition() call, which is a
+    // no-op for video same as before - audio and local-file playback (both
+    // of which do seek correctly) go through this exact same call.
+    connect(slider, &QSlider::sliderReleased, [player = this->player, slider]() { player->setPosition(slider->sliderPosition()); });
+    connect(slider, &QSlider::sliderMoved,
+            [value](int position) { value->setText(LocalPlayerTab::durationFmt(position)); });
+    connect(this->player, &QMediaPlayer::durationChanged, [slider](qint64 duration) {
+        slider->setValue(0);
+        slider->setRange(0, duration);
+    });
+    connect(this->player, &QMediaPlayer::positionChanged, [slider, value](qint64 position) {
+        if (!slider->isSliderDown()) {
+            slider->setValue(position);
+            value->setText(LocalPlayerTab::durationFmt(position));
+        }
+    });
+
+    layout->addStretch(4);
+    layout->addWidget(slider, 28);
+    layout->addWidget(value, 3);
+    layout->addStretch(1);
+
+    return widget;
+}
+
+QWidget *JellyfinTab::controls_widget()
+{
+    QWidget *widget = new QWidget(this);
+    QHBoxLayout *layout = new QHBoxLayout(widget);
+
+    QPushButton *previous_button = new QPushButton(widget);
+    previous_button->setFlat(true);
+    this->arbiter.forge().iconize("skip_previous", previous_button, 56);
+    connect(previous_button, &QPushButton::clicked, [player = this->player]() {
+        if (player->playlist()->currentIndex() < 0) player->playlist()->setCurrentIndex(0);
+        player->playlist()->previous();
+        player->play();
+    });
+    layout->addWidget(previous_button);
+
+    QPushButton *play_button = new QPushButton(widget);
+    play_button->setFlat(true);
+    play_button->setCheckable(true);
+    play_button->setChecked(false);
+    this->arbiter.forge().iconize("play", "pause", play_button, 56);
+    connect(play_button, &QPushButton::clicked, [player = this->player, play_button](bool checked = false) {
+        play_button->setChecked(!checked);
+        if (checked)
+            player->play();
+        else
+            player->pause();
+    });
+    connect(this->player, &QMediaPlayer::stateChanged, [play_button](QMediaPlayer::State state) {
+        play_button->setChecked(state == QMediaPlayer::PlayingState);
+    });
+    layout->addWidget(play_button);
+
+    QPushButton *forward_button = new QPushButton(widget);
+    forward_button->setFlat(true);
+    this->arbiter.forge().iconize("skip_next", forward_button, 56);
+    connect(forward_button, &QPushButton::clicked, [player = this->player]() {
+        player->playlist()->next();
+        player->play();
+    });
+    layout->addWidget(forward_button);
+
+    return widget;
 }
 
 DashcamVideoView::DashcamVideoView(QGraphicsScene *scene, QGraphicsVideoItem *item, QWidget *parent)

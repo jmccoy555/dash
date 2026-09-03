@@ -228,6 +228,7 @@ Session::System::System(QSettings &settings, Arbiter &arbiter)
     : clock()
     , server(arbiter)
     , bluetooth(arbiter)
+    , jellyfin(arbiter)
     , brightness(settings)
     , volume(Session::System::get_current_volume())
 {
