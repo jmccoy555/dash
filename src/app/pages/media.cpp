@@ -1,7 +1,15 @@
 #include <algorithm>
 
+#include <attachedpictureframe.h>
 #include <fileref.h>
+#include <flacfile.h>
+#include <flacpicture.h>
+#include <id3v2tag.h>
 #include <math.h>
+#include <mp4coverart.h>
+#include <mp4file.h>
+#include <mp4tag.h>
+#include <mpegfile.h>
 #include <tag.h>
 #include <tpropertymap.h>
 #include <BluezQt/PendingCall>
@@ -16,6 +24,54 @@
 #include "app/pages/media.hpp"
 #include "plugins/dab_plugin.hpp"
 #include "plugins/radio_plugin.hpp"
+
+namespace {
+
+// Pulls embedded cover art straight out of the file's own tags - local
+// tracks (including anything synced down from Jellyfin, which lands here as
+// plain flac/m4a/mp3 files) have no separate thumbnail source the way
+// Jellyfin/DashTube's server-fetched art does, so this is the only way to
+// give their tiles a picture instead of a blank placeholder. One format
+// branch each since TagLib 1.13 has no unified cross-format art API yet.
+QPixmap local_track_art(QString path)
+{
+    TagLib::ByteVector data;
+
+    if (path.endsWith(".mp3", Qt::CaseInsensitive)) {
+        TagLib::MPEG::File file(path.toLocal8Bit().constData());
+        if (TagLib::ID3v2::Tag *tag = file.ID3v2Tag()) {
+            TagLib::ID3v2::FrameList frames = tag->frameList("APIC");
+            if (!frames.isEmpty()) {
+                auto *frame = static_cast<TagLib::ID3v2::AttachedPictureFrame *>(frames.front());
+                data = frame->picture();
+            }
+        }
+    } else if (path.endsWith(".flac", Qt::CaseInsensitive)) {
+        TagLib::FLAC::File file(path.toLocal8Bit().constData());
+        TagLib::List<TagLib::FLAC::Picture *> pictures = file.pictureList();
+        if (!pictures.isEmpty())
+            data = pictures.front()->data();
+    } else if (path.endsWith(".m4a", Qt::CaseInsensitive)) {
+        TagLib::MP4::File file(path.toLocal8Bit().constData());
+        if (TagLib::MP4::Tag *tag = file.tag()) {
+            TagLib::MP4::ItemMap items = tag->itemMap();
+            if (items.contains("covr")) {
+                TagLib::MP4::CoverArtList covers = items["covr"].toCoverArtList();
+                if (!covers.isEmpty())
+                    data = covers.front().data();
+            }
+        }
+    }
+
+    if (data.isEmpty())
+        return QPixmap();
+
+    QPixmap pixmap;
+    pixmap.loadFromData(reinterpret_cast<const uchar *>(data.data()), data.size());
+    return pixmap;
+}
+
+}
 
 void ClickableSlider::mousePressEvent(QMouseEvent *event)
 {
@@ -581,13 +637,15 @@ QWidget *DabPlayerTab::header_widget()
 LocalPlayerTab::LocalPlayerTab(Arbiter &arbiter, QWidget *parent)
     : QWidget(parent)
     , arbiter(arbiter)
+    , config(Config::get_instance())
+    , player(new QMediaPlayer(this))
+    , browser_area(new QScrollArea(this))
+    , browser_container(new QWidget(this->browser_area))
+    , path_label(new QLabel(this))
+    , home_button(nullptr)
 {
-    this->config = Config::get_instance();
-
     QMediaPlaylist *playlist = new QMediaPlaylist(this);
     playlist->setPlaybackMode(QMediaPlaylist::Loop);
-
-    this->player = new QMediaPlayer(this);
     this->player->setPlaylist(playlist);
 
     // Registers with AAHandler so AA starting playback can pause this (and
@@ -596,71 +654,127 @@ LocalPlayerTab::LocalPlayerTab(Arbiter &arbiter, QWidget *parent)
     // active_media_source there to decide whether to route to AA or here.
     this->arbiter.android_auto().handler->local_player = this->player;
 
-    this->path_label = new QLabel(this->config->get_media_home(), this);
+    new QVBoxLayout(this->browser_container);
+    this->browser_area->setWidget(this->browser_container);
+    this->browser_area->setWidgetResizable(true);
+    this->browser_area->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    this->browser_area->setFrameShape(QFrame::NoFrame);
+    Session::Forge::to_touch_scroller(this->browser_area);
+
+    connect(this->player->playlist(), &QMediaPlaylist::currentIndexChanged, [this](int idx) {
+        QString playing = idx < 0 ? QString() : this->player->playlist()->media(idx).canonicalUrl().toLocalFile();
+        for (auto it = this->track_tiles.constBegin(); it != this->track_tiles.constEnd(); ++it)
+            it.value()->setChecked(it.key() == playing);
+    });
 
     QVBoxLayout *layout = new QVBoxLayout(this);
-
-    layout->addWidget(this->path_label);
-    layout->addWidget(this->playlist_widget());
+    layout->addWidget(this->header_widget());
+    layout->addWidget(this->browser_area, 1);
     layout->addWidget(this->seek_widget());
     layout->addWidget(this->controls_widget());
+
+    this->navigate(this->config->get_media_home());
 }
 
-QWidget *LocalPlayerTab::playlist_widget()
+QWidget *LocalPlayerTab::header_widget()
 {
     QWidget *widget = new QWidget(this);
     QHBoxLayout *layout = new QHBoxLayout(widget);
 
-    QString root_path(config->get_media_home());
-
-    QPushButton *home_button = new QPushButton(widget);
-    home_button->setFlat(true);
-    home_button->setCheckable(true);
-    home_button->setChecked(this->config->get_media_home() == root_path);
-    this->arbiter.forge().iconize("playlist_add", "playlist_add_check", home_button, 32);
-    connect(home_button, &QPushButton::clicked, [this](bool checked = false) {
-        this->config->set_media_home(checked ? this->path_label->text() : QDir().absolutePath());
+    this->home_button = new QPushButton(widget);
+    this->home_button->setFlat(true);
+    this->home_button->setCheckable(true);
+    this->arbiter.forge().iconize("playlist_add", "playlist_add_check", this->home_button, 24);
+    connect(this->home_button, &QPushButton::clicked, [this](bool checked = false) {
+        this->config->set_media_home(checked ? this->current_path : QDir().absolutePath());
     });
-    layout->addWidget(home_button, 0, Qt::AlignTop);
+    layout->addWidget(this->home_button);
 
-    QListWidget *folders = new QListWidget(widget);
-    Session::Forge::to_touch_scroller(folders);
-    this->populate_dirs(root_path, folders);
-    layout->addWidget(folders, 1);
-
-    QListWidget *tracks = new QListWidget(widget);
-    Session::Forge::to_touch_scroller(tracks);
-    this->populate_tracks(root_path, tracks);
-    connect(tracks, &QListWidget::itemClicked, [tracks, player = this->player](QListWidgetItem *item) {
-        // Only touches the active playlist here, when a track is actually
-        // chosen to play - browsing folders (below) no longer clears or
-        // rebuilds it, so navigating to another folder to see what's in it
-        // doesn't stop whatever's currently playing (see conversation).
-        // Rebuilt from what's currently displayed so next/prev still walk
-        // through this folder's tracks in order.
-        player->playlist()->clear();
-        for (int i = 0; i < tracks->count(); ++i)
-            player->playlist()->addMedia(QMediaContent(QUrl::fromLocalFile(tracks->item(i)->data(Qt::UserRole).toString())));
-        player->playlist()->setCurrentIndex(tracks->row(item));
-        player->play();
-    });
-    connect(this->player->playlist(), &QMediaPlaylist::currentIndexChanged, [tracks](int idx) {
-        if (idx < 0) return;
-        tracks->setCurrentRow(idx);
-    });
-    connect(folders, &QListWidget::itemClicked, [this, folders, tracks, home_button](QListWidgetItem *item) {
-        if (!item->isSelected()) return;
-
-        QString current_path(item->data(Qt::UserRole).toString());
-        this->path_label->setText(current_path);
-        this->populate_tracks(current_path, tracks);
-        this->populate_dirs(current_path, folders);
-
-        home_button->setChecked(this->config->get_media_home() == current_path);
-    });
-    layout->addWidget(tracks, 2);
+    this->path_label->setAlignment(Qt::AlignCenter);
+    layout->addWidget(this->path_label, 1);
+    layout->addSpacing(24);  // balances home_button's width so path_label stays visually centered
 
     return widget;
+}
+
+void LocalPlayerTab::navigate(QString path)
+{
+    this->current_path = path;
+    this->path_label->setText(path);
+    this->home_button->setChecked(this->config->get_media_home() == path);
+    this->populate(path);
+}
+
+void LocalPlayerTab::populate(QString path)
+{
+    this->track_tiles.clear();
+
+    QLayout *container_layout = this->browser_container->layout();
+    QLayoutItem *child;
+    while ((child = container_layout->takeAt(0)) != nullptr) {
+        delete child->widget();
+        delete child;
+    }
+
+    QWidget *grid_widget = new QWidget(this->browser_container);
+    QGridLayout *grid = new QGridLayout(grid_widget);
+    grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    const int columns = 9;
+    int i = 0;
+
+    QDir dir(path);
+    if (!dir.isRoot()) {
+        QToolButton *up = this->arbiter.forge().media_tile("↲ Back", QString());
+        connect(up, &QToolButton::clicked, [this, path] {
+            QDir parent(path);
+            parent.cdUp();
+            this->navigate(parent.absolutePath());
+        });
+        grid->addWidget(up, 0, 0);
+        i++;
+    }
+
+    QFileInfoList dirs = dir.entryInfoList(QDir::AllDirs | QDir::NoDotAndDotDot | QDir::Readable, QDir::Name | QDir::IgnoreCase);
+    for (const QFileInfo &info : dirs) {
+        QToolButton *tile = this->arbiter.forge().media_tile(info.fileName(), QString());
+        QString subpath = info.absoluteFilePath();
+        connect(tile, &QToolButton::clicked, [this, subpath] { this->navigate(subpath); });
+        grid->addWidget(tile, i / columns, i % columns);
+        i++;
+    }
+
+    QStringList track_names = dir.entryList(QStringList() << "*.flac" << "*.m4a" << "*.mp3", QDir::Files | QDir::Readable, QDir::Name | QDir::IgnoreCase);
+    QStringList track_paths;
+    for (const QString &name : track_names)
+        track_paths.append(dir.absoluteFilePath(name));
+
+    for (int t = 0; t < track_paths.size(); t++) {
+        QString track_path = track_paths[t];
+        QString title = QFileInfo(track_path).completeBaseName();
+
+        QToolButton *tile = this->arbiter.forge().media_tile(title, QString(), local_track_art(track_path));
+        tile->setCheckable(true);
+        tile->setChecked(this->player->playlist()->currentMedia().canonicalUrl().toLocalFile() == track_path);
+        this->track_tiles[track_path] = tile;
+
+        // Only touches the active playlist here, when a track is actually
+        // chosen to play - browsing folders doesn't rebuild it, so
+        // navigating to another folder to see what's in it doesn't stop
+        // whatever's currently playing. Rebuilt from what's currently
+        // listed so next/prev still walk through this folder's tracks.
+        connect(tile, &QToolButton::clicked, [this, track_paths, t] {
+            this->player->playlist()->clear();
+            for (const QString &p : track_paths)
+                this->player->playlist()->addMedia(QMediaContent(QUrl::fromLocalFile(p)));
+            this->player->playlist()->setCurrentIndex(t);
+            this->player->play();
+        });
+        grid->addWidget(tile, i / columns, i % columns);
+        i++;
+    }
+
+    container_layout->addWidget(grid_widget);
+    static_cast<QVBoxLayout *>(container_layout)->addStretch();
 }
 
 QWidget *LocalPlayerTab::seek_widget()
@@ -754,42 +868,6 @@ QString LocalPlayerTab::durationFmt(int total_ms)
     int secs = (total_ms / 1000) % 60;
 
     return QString("%1:%2").arg(mins, 2, 10, QChar('0')).arg(secs, 2, 10, QChar('0'));
-}
-
-void LocalPlayerTab::populate_dirs(QString path, QListWidget *dirs_widget)
-{
-    dirs_widget->clear();
-    QDir current_dir(path);
-    QFileInfoList dirs = current_dir.entryInfoList(QDir::AllDirs | QDir::Readable);
-    for (QFileInfo dir : dirs) {
-        if (dir.fileName() == ".") continue;
-
-        QListWidgetItem *item = new QListWidgetItem(dir.fileName(), dirs_widget);
-        if (dir.fileName() == "..") {
-            item->setText("↲");
-
-            if (current_dir.isRoot()) item->setFlags(Qt::NoItemFlags);
-        }
-        else {
-            item->setText(dir.fileName());
-        }
-        item->setData(Qt::UserRole, QVariant(dir.absoluteFilePath()));
-    }
-}
-
-void LocalPlayerTab::populate_tracks(QString path, QListWidget *tracks_widget)
-{
-    // Just populates the browseable list - doesn't touch the active
-    // playlist (see the tracks itemClicked handler in playlist_widget(),
-    // which is the only place that now does).
-    tracks_widget->clear();
-    QStringList tracks = QDir(path).entryList(QStringList() << "*.flac" << "*.m4a" << "*.mp3", QDir::Files | QDir::Readable);
-    for (QString track : tracks) {
-        int lastPoint = track.lastIndexOf(".");
-        QString fileNameNoExt = track.left(lastPoint);
-        QListWidgetItem *item = new QListWidgetItem(fileNameNoExt, tracks_widget);
-        item->setData(Qt::UserRole, QVariant(path + '/' + track));
-    }
 }
 
 JellyfinTab::JellyfinTab(Arbiter &arbiter, QWidget *parent)
