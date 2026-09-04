@@ -2,6 +2,7 @@
 
 #include <functional>
 
+#include <QList>
 #include <QMap>
 #include <QObject>
 #include <QPixmap>
@@ -34,6 +35,14 @@ class Thumbnails : public QObject {
     QNetworkAccessManager *net();
 
     Arbiter &arbiter;
-    QNetworkAccessManager *network = nullptr;
+    // A single QNetworkAccessManager caps itself at ~6 concurrent
+    // connections per host, which turns "load a few hundred small
+    // thumbnails for one big folder" into a slow trickle even though each
+    // one individually is fast (confirmed live - ~50ms server-side per
+    // image). Round-robining across a small pool of managers multiplies
+    // that ceiling, since the connection limit is tracked per-manager, not
+    // per-process.
+    QList<QNetworkAccessManager *> pool;
+    int next = 0;
     QMap<QString, QPixmap> cache;
 };

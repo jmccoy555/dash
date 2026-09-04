@@ -17,9 +17,12 @@ QNetworkAccessManager *Thumbnails::net()
     // Lazily constructed - see Jellyfin::net()'s comment for why (this
     // service lives in Session::System too, built before the event loop is
     // running).
-    if (!this->network)
-        this->network = new QNetworkAccessManager(this);
-    return this->network;
+    if (this->pool.isEmpty()) {
+        for (int i = 0; i < 6; i++)
+            this->pool.append(new QNetworkAccessManager(this));
+    }
+    this->next = (this->next + 1) % this->pool.size();
+    return this->pool[this->next];
 }
 
 void Thumbnails::load(QString url, QObject *context, std::function<void(QPixmap)> callback)

@@ -13,6 +13,7 @@
 #include <QList>
 #include <QMap>
 #include <QPluginLoader>
+#include <QPixmap>
 #include <QSettings>
 #include <QString>
 #include <QPalette>
@@ -180,13 +181,15 @@ class Session {
         void iconize(QString name, QString alt_name, QAbstractButton *button, uint8_t size) const;
         void iconize(QIcon &icon, QAbstractButton *button, uint8_t size) const;
         QFont font(int size, bool mono = false) const;
-        // A grid tile: async-loaded thumbnail above title text, matching
-        // the DAB tab's plain tiles closely enough to feel like the same
-        // family of UI. Shared by JellyfinTab and YouTubeTab, the two tabs
-        // that actually have artwork to show - image_url empty is fine,
-        // the tile just keeps its blank placeholder. Returned unparented
-        // (caller adds it into whatever grid/overlay layout it needs).
-        QToolButton *media_tile(QString title, QString image_url) const;
+        // A grid tile: thumbnail above title text, matching the DAB tab's
+        // plain tiles closely enough to feel like the same family of UI.
+        // Shared by JellyfinTab/YouTubeTab (async-fetched image_url) and
+        // LocalPlayerTab (art's already in hand synchronously - embedded
+        // art pulled from the file itself, no fetch needed - pass it as
+        // local_pixmap and leave image_url empty). Blank placeholder stays
+        // if neither is supplied. Returned unparented (caller adds it into
+        // whatever grid/overlay layout it needs).
+        QToolButton *media_tile(QString title, QString image_url, QPixmap local_pixmap = QPixmap()) const;
         QWidget *brightness_slider(bool buttons = true) const;
         QWidget *volume_slider(bool buttons = true) const;
 

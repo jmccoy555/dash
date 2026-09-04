@@ -353,6 +353,7 @@ DabPlayerTab::DabPlayerTab(Arbiter &arbiter, QWidget *parent)
     , now_playing_label(new QLabel(this))
     , services_area(new QScrollArea(this))
     , services_container(new QWidget(this->services_area))
+    , letter_index(new QWidget(this))
     , stop_button(new QPushButton("stop", this))
 {
     this->status_label->setAlignment(Qt::AlignCenter);
@@ -371,6 +372,15 @@ DabPlayerTab::DabPlayerTab(Arbiter &arbiter, QWidget *parent)
     this->services_area->setFrameShape(QFrame::NoFrame);
     Session::Forge::to_touch_scroller(this->services_area);
 
+    // A-Z jump strip - with 100+ stations grouped into 20-odd letter
+    // sections, scrolling past all of them to get to, say, "S" is exactly
+    // the kind of fiddly, attention-hungry interaction this whole tile grid
+    // was meant to get away from. Rebuilt alongside the grid itself in
+    // rebuild_services() - only letters actually present get a button.
+    new QVBoxLayout(this->letter_index);
+    this->letter_index->layout()->setContentsMargins(0, 0, 0, 0);
+    this->letter_index->setFixedWidth(50);
+
     connect(this->stop_button, &QPushButton::clicked, [this]{
         if (DabPlugin *plugin = qobject_cast<DabPlugin *>(this->loader.instance()))
             plugin->stop();
@@ -383,11 +393,17 @@ DabPlayerTab::DabPlayerTab(Arbiter &arbiter, QWidget *parent)
     connect(this->poll_timer, &QTimer::timeout, [this]{ this->refresh(); });
     this->poll_timer->start(1000);
 
+    QWidget *services_row = new QWidget(this);
+    QHBoxLayout *services_row_layout = new QHBoxLayout(services_row);
+    services_row_layout->setContentsMargins(0, 0, 0, 0);
+    services_row_layout->addWidget(this->services_area, 1);
+    services_row_layout->addWidget(this->letter_index);
+
     auto layout = new QVBoxLayout(this);
     layout->addWidget(this->header_widget());
     layout->addWidget(this->status_label);
     layout->addWidget(this->now_playing_label);
-    layout->addWidget(this->services_area, 1);
+    layout->addWidget(services_row, 1);
     layout->addWidget(this->stop_button, 0, Qt::AlignCenter);
 
     this->load_plugin();
@@ -467,6 +483,13 @@ void DabPlayerTab::rebuild_services(QList<DabService> services)
         groups[letter].append(service);
     }
 
+    QLayout *index_layout = this->letter_index->layout();
+    QLayoutItem *index_child;
+    while ((index_child = index_layout->takeAt(0)) != nullptr) {
+        delete index_child->widget();
+        delete index_child;
+    }
+
     const int columns = 5;
     for (auto group = groups.constBegin(); group != groups.constEnd(); ++group) {
         QLabel *header = new QLabel(group.key(), this->services_container);
@@ -483,7 +506,14 @@ void DabPlayerTab::rebuild_services(QList<DabService> services)
             i++;
         }
         container_layout->addWidget(grid_widget);
+
+        QPushButton *jump = new QPushButton(group.key(), this->letter_index);
+        jump->setFlat(true);
+        jump->setFixedHeight(36);
+        connect(jump, &QPushButton::clicked, [this, header] { this->services_area->ensureWidgetVisible(header, 0, 0); });
+        index_layout->addWidget(jump);
     }
+    static_cast<QVBoxLayout *>(index_layout)->addStretch();
 
     static_cast<QVBoxLayout *>(container_layout)->addStretch();
 }
@@ -890,7 +920,7 @@ void JellyfinTab::populate(QList<Jellyfin::Item> items)
     QWidget *grid_widget = new QWidget(this->browser_container);
     QGridLayout *grid = new QGridLayout(grid_widget);
     grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);  // media_tile()'s poster-shaped tiles are narrower than the content area can fill edge-to-edge - pack left rather than stretching big gaps between columns
-    const int columns = 8;
+    const int columns = 9;
     int i = 0;
 
     if (!this->nav_stack.isEmpty()) {
@@ -1312,7 +1342,7 @@ void YouTubeTab::populate(QList<YouTube::Video> results)
     QWidget *grid_widget = new QWidget(this->results_container);
     QGridLayout *grid = new QGridLayout(grid_widget);
     grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);  // see the equivalent comment in JellyfinTab::populate()
-    const int columns = 8;
+    const int columns = 9;
 
     for (int i = 0; i < results.size(); i++) {
         const YouTube::Video &video = results[i];

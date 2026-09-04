@@ -213,7 +213,11 @@ void Jellyfin::browse(QString parentId)
         query.addQueryItem("SortOrder", "Ascending");
         query.addQueryItem("Recursive", "false");
     }
-    query.addQueryItem("Fields", "Size");
+    // Size is deliberately not requested here - nothing in the browse UI
+    // uses it, only the free-space check in download_next(), which reads it
+    // off sync_favorites()'s own separate query instead. On a large library
+    // (the 717-item Movies list on the test server) it's a meaningful chunk
+    // of a response that's already the slow part of opening a folder.
     url.setQuery(query);
 
     QNetworkRequest request(url);

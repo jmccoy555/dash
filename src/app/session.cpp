@@ -338,7 +338,7 @@ QFont Session::Forge::font(int size, bool mono) const
     return QFont(name, scaled);
 }
 
-QToolButton *Session::Forge::media_tile(QString title, QString image_url) const
+QToolButton *Session::Forge::media_tile(QString title, QString image_url, QPixmap local_pixmap) const
 {
     auto scale = this->arbiter_.layout().scale;
     QSize icon_size(160 * scale, 160 * scale);
@@ -349,13 +349,19 @@ QToolButton *Session::Forge::media_tile(QString title, QString image_url) const
     tile->setFixedSize(180 * scale, 210 * scale);
     tile->setText(title);
 
-    // Kept blank (no placeholder icon) until the real thumbnail arrives -
-    // this is called for every row in a list as it's built, so a fetch is
-    // fired off immediately; is a no-op if image_url is empty (containers
-    // with no art) or already cached from an earlier visit.
-    this->arbiter_.system().thumbnails.load(image_url, tile, [tile, icon_size](QPixmap pixmap) {
-        tile->setIcon(QIcon(pixmap.scaled(icon_size, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation)));
-    });
+    if (!local_pixmap.isNull()) {
+        // Already in hand synchronously (embedded art pulled straight from
+        // the file) - no fetch needed.
+        tile->setIcon(QIcon(local_pixmap.scaled(icon_size, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation)));
+    } else {
+        // Kept blank (no placeholder icon) until the real thumbnail arrives
+        // - this is called for every row in a list as it's built, so a
+        // fetch is fired off immediately; is a no-op if image_url is empty
+        // (containers with no art) or already cached from an earlier visit.
+        this->arbiter_.system().thumbnails.load(image_url, tile, [tile, icon_size](QPixmap pixmap) {
+            tile->setIcon(QIcon(pixmap.scaled(icon_size, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation)));
+        });
+    }
 
     return tile;
 }

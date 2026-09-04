@@ -113,6 +113,7 @@ class DabPlayerTab : public QWidget {
     QLabel *now_playing_label;
     QScrollArea *services_area;      // scroll container - services_container lives inside it
     QWidget *services_container;     // rebuilt (grouped-by-letter grid of tiles) only when the station list actually changes
+    QWidget *letter_index;           // A-Z (+#) jump strip alongside services_area - one button per letter actually present, rebuilt alongside services_container
     QPushButton *stop_button;
 
     QString services_signature;              // id:label pairs of the last render - guards against rebuilding (and losing scroll position) every poll tick for nothing
