@@ -49,10 +49,20 @@ class MediaPage : public QTabWidget, public Page {
 
     void init() override;
 
+   protected:
+    void resizeEvent(QResizeEvent *event) override;
+
    private:
     QList<QWidget *> tabs;  // in the same order added - index lines up with the tab label passed to addTab()
 
     void update_tab_visibility(QStringList disabled);
+    // Icon-only tabs are narrow enough that QTabBar packs them off to the
+    // left with the rest of the bar sitting empty - stretching each one to
+    // an equal share of the full width instead spreads them across, the
+    // same evenly-spaced look as the icon rail down the left edge. Redone
+    // on every resize since fullscreen toggling changes how much width
+    // there is to divide up.
+    void resize_tabs();
 };
 
 class BluetoothPlayerTab : public QWidget {

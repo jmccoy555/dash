@@ -22,6 +22,7 @@
 
 #include "app/window.hpp"
 #include "app/pages/media.hpp"
+#include "app/utilities/icon_engine.hpp"
 #include "plugins/dab_plugin.hpp"
 #include "plugins/radio_plugin.hpp"
 
@@ -91,18 +92,28 @@ MediaPage::MediaPage(Arbiter &arbiter, QWidget *parent)
 
 void MediaPage::init()
 {
-    auto add_tab = [this](QWidget *widget, QString name) {
-        this->addTab(widget, name);
+    // Icon-only tabs, matching the rail's look - the name is still needed
+    // for the per-tab Settings toggle (see update_tab_visibility() below and
+    // MediaSettingsTab::MEDIA_TAB_NAMES in settings.cpp, which has to stay
+    // in sync with this list by hand), so it's stashed on the widget itself
+    // via setProperty() rather than shown as the tab's actual label.
+    auto add_tab = [this](QWidget *widget, QString name, QString icon_name) {
+        QIcon icon(new StylizedIconEngine(this->arbiter, QString(":/icons/%1.svg").arg(icon_name), true));
+        this->addTab(widget, icon, QString());
+        widget->setProperty("media_tab_name", name);
         this->tabs.append(widget);
     };
 
-    add_tab(new RadioPlayerTab(this->arbiter, this), "Radio");
-    add_tab(new DabPlayerTab(this->arbiter, this), "DAB");
-    add_tab(new BluetoothPlayerTab(this->arbiter, this), "Bluetooth");
-    add_tab(new LocalPlayerTab(this->arbiter, this), "Local");
-    add_tab(new JellyfinTab(this->arbiter, this), "Jellyfin");
-    add_tab(new YouTubeTab(this->arbiter, this), "DashTube");
-    add_tab(new DashcamTab(this->arbiter, this), "Dashcam");
+    add_tab(new RadioPlayerTab(this->arbiter, this), "Radio", "radio");
+    add_tab(new DabPlayerTab(this->arbiter, this), "DAB", "dab");
+    add_tab(new BluetoothPlayerTab(this->arbiter, this), "Bluetooth", "bluetooth");
+    add_tab(new LocalPlayerTab(this->arbiter, this), "Local", "library_music");
+    add_tab(new JellyfinTab(this->arbiter, this), "Jellyfin", "video_library");
+    add_tab(new YouTubeTab(this->arbiter, this), "DashTube", "smart_display");
+    add_tab(new DashcamTab(this->arbiter, this), "Dashcam", "videocam");
+
+    int icon_size = 32 * this->arbiter.layout().scale;  // matches the rail's own iconize(icon, button, 32) in window.cpp
+    this->tabBar()->setIconSize(QSize(icon_size, icon_size));
 
     // Tabs are still fully constructed either way (their services - Jellyfin,
     // YouTube, DAB's scan - already run app-wide via Session::System
@@ -121,8 +132,28 @@ void MediaPage::update_tab_visibility(QStringList disabled)
     for (QWidget *tab : this->tabs) {
         int index = this->indexOf(tab);
         if (index >= 0)
-            this->setTabVisible(index, !disabled.contains(this->tabText(index)));
+            this->setTabVisible(index, !disabled.contains(tab->property("media_tab_name").toString()));
     }
+    this->resize_tabs();  // fewer/more visible tabs changes what an equal share of the width looks like
+}
+
+void MediaPage::resizeEvent(QResizeEvent *event)
+{
+    QTabWidget::resizeEvent(event);
+    this->resize_tabs();
+}
+
+void MediaPage::resize_tabs()
+{
+    int visible_count = 0;
+    for (int i = 0; i < this->tabBar()->count(); i++)
+        if (this->tabBar()->isTabVisible(i))
+            visible_count++;
+    if (visible_count == 0 || this->width() <= 0)
+        return;
+
+    int tab_width = this->width() / visible_count;
+    this->tabBar()->setStyleSheet(QString("QTabBar::tab { min-width: %1px; max-width: %1px; }").arg(tab_width));
 }
 
 BluetoothPlayerTab::BluetoothPlayerTab(Arbiter &arbiter, QWidget *parent)

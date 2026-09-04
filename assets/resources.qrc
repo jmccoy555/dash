@@ -7,6 +7,13 @@
         <file>icons/play.svg</file>
         <file>icons/pause.svg</file>
         <file>icons/stop.svg</file>
+        <file>icons/radio.svg</file>
+        <file>icons/dab.svg</file>
+        <file>icons/bluetooth.svg</file>
+        <file>icons/library_music.svg</file>
+        <file>icons/video_library.svg</file>
+        <file>icons/smart_display.svg</file>
+        <file>icons/videocam.svg</file>
         <file>icons/brightness_low.svg</file>
         <file>icons/play_circle_outline.svg</file>
         <file>icons/speed.svg</file>
