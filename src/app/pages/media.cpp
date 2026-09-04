@@ -97,9 +97,27 @@ void MediaPage::init()
     // MediaSettingsTab::MEDIA_TAB_NAMES in settings.cpp, which has to stay
     // in sync with this list by hand), so it's stashed on the widget itself
     // via setProperty() rather than shown as the tab's actual label.
-    auto add_tab = [this](QWidget *widget, QString name, QString icon_name) {
+    int icon_size = 32 * this->arbiter.layout().scale;  // matches the rail's own iconize(icon, button, 32) in window.cpp
+
+    // The tab's own icon slot only ever gets sized to the icon itself, sat
+    // at the tab's leading edge - fine when a label follows it, but with no
+    // label left it stranded off to one side of the wide equal-width cells
+    // resize_tabs() hands out below. A plain centered QLabel standing in as
+    // the tab's whole button (LeftSide "corner" widget, but here filling the
+    // entire tab) sidesteps that - resize_tabs() keeps its width matched to
+    // the tab's so the centering stays correct as the page resizes.
+    auto add_tab = [this, icon_size](QWidget *widget, QString name, QString icon_name) {
         QIcon icon(new StylizedIconEngine(this->arbiter, QString(":/icons/%1.svg").arg(icon_name), true));
-        this->addTab(widget, icon, QString());
+
+        this->addTab(widget, QString());
+        int index = this->indexOf(widget);
+
+        QLabel *icon_label = new QLabel(this->tabBar());
+        icon_label->setPixmap(icon.pixmap(icon_size, icon_size));
+        icon_label->setAlignment(Qt::AlignCenter);
+        this->tabBar()->setTabButton(index, QTabBar::LeftSide, icon_label);
+        this->tab_icons.append(icon_label);
+
         widget->setProperty("media_tab_name", name);
         this->tabs.append(widget);
     };
@@ -111,9 +129,6 @@ void MediaPage::init()
     add_tab(new JellyfinTab(this->arbiter, this), "Jellyfin", "video_library");
     add_tab(new YouTubeTab(this->arbiter, this), "DashTube", "smart_display");
     add_tab(new DashcamTab(this->arbiter, this), "Dashcam", "videocam");
-
-    int icon_size = 32 * this->arbiter.layout().scale;  // matches the rail's own iconize(icon, button, 32) in window.cpp
-    this->tabBar()->setIconSize(QSize(icon_size, icon_size));
 
     // Tabs are still fully constructed either way (their services - Jellyfin,
     // YouTube, DAB's scan - already run app-wide via Session::System
@@ -154,6 +169,8 @@ void MediaPage::resize_tabs()
 
     int tab_width = this->width() / visible_count;
     this->tabBar()->setStyleSheet(QString("QTabBar::tab { min-width: %1px; max-width: %1px; }").arg(tab_width));
+    for (QLabel *icon_label : this->tab_icons)
+        icon_label->setFixedWidth(tab_width);
 }
 
 BluetoothPlayerTab::BluetoothPlayerTab(Arbiter &arbiter, QWidget *parent)
@@ -1125,29 +1142,43 @@ QWidget *JellyfinTab::header_widget()
     QWidget *widget = new QWidget(this);
     QHBoxLayout *layout = new QHBoxLayout(widget);
 
-    Dialog *dialog = new Dialog(this->arbiter, true, this->window());
-    dialog->set_body(this->settings_dialog_body());
+    // A Dialog (its own top-level QDialog window, same as every other
+    // settings popup in the app) used to hold this, but the on-screen
+    // keyboard's key events never reached a QLineEdit living in a separate
+    // top-level window from the main one - confirmed live, typing and even
+    // backspace silently went nowhere, while the exact same keyboard works
+    // fine on e.g. DashTube's search bar, which lives directly in the main
+    // window. Login needs actual typing, so this is a page in content_stack
+    // instead - same window as everything else, same window the keyboard is
+    // known to work in.
+    QWidget *settings_view = this->settings_widget();
+    this->content_stack->addWidget(settings_view);
 
     QPushButton *settings_button = new QPushButton(widget);
     settings_button->setFlat(true);
     this->arbiter.forge().iconize("settings", settings_button, 24);
-    connect(settings_button, &QPushButton::clicked, [dialog] { dialog->open(); });
+    connect(settings_button, &QPushButton::clicked, [this, settings_view] {
+        this->content_stack->setCurrentWidget(settings_view);
+    });
 
     this->breadcrumb_label->setAlignment(Qt::AlignCenter);
 
-    // Only relevant once a video is playing (browsing is otherwise always
-    // showing already) - pauses playback and swaps back to the list rather
-    // than leaving a movie running behind a view the user can't see.
+    // Shown while video is playing (leaving pauses it rather than letting a
+    // movie run on behind a view the user can't see) or while the settings
+    // page is up (its only way back, now that it's not a dialog with its
+    // own cancel button).
     QPushButton *back_button = new QPushButton(widget);
     back_button->setFlat(true);
     this->arbiter.forge().iconize("arrow_left", back_button, 24);
     back_button->hide();
     connect(back_button, &QPushButton::clicked, [this] {
-        this->player->pause();
+        if (this->content_stack->currentWidget() == this->video_widget)
+            this->player->pause();
         this->content_stack->setCurrentWidget(this->browser_area);
     });
-    connect(this->content_stack, &QStackedWidget::currentChanged, [this, back_button](int index) {
-        back_button->setVisible(this->content_stack->widget(index) == this->video_widget);
+    connect(this->content_stack, &QStackedWidget::currentChanged, [this, back_button, settings_view](int index) {
+        QWidget *current = this->content_stack->widget(index);
+        back_button->setVisible(current == this->video_widget || current == settings_view);
     });
 
     // Same visibility rule as back_button - only makes sense while video is
@@ -1177,12 +1208,27 @@ QWidget *JellyfinTab::header_widget()
     return widget;
 }
 
-QWidget *JellyfinTab::settings_dialog_body()
+QWidget *JellyfinTab::settings_widget()
 {
+    // A full content_stack page now rather than a small popup (see
+    // header_widget()'s comment), so the actual form is capped to a
+    // sensible width and centered in it rather than stretching edge to edge.
     QWidget *widget = new QWidget(this);
-    QVBoxLayout *layout = new QVBoxLayout(widget);
+    QWidget *form = new QWidget(widget);
+    form->setMaximumWidth(500 * this->arbiter.layout().scale);
+    QVBoxLayout *layout = new QVBoxLayout(form);
 
-    QLineEdit *server_input = new QLineEdit(this->config->get_jellyfin_server_url(), widget);
+    QHBoxLayout *center = new QHBoxLayout();
+    center->addStretch(1);
+    center->addWidget(form);
+    center->addStretch(1);
+
+    QVBoxLayout *outer = new QVBoxLayout(widget);
+    outer->addStretch(1);
+    outer->addLayout(center);
+    outer->addStretch(1);
+
+    QLineEdit *server_input = new QLineEdit(this->config->get_jellyfin_server_url(), form);
     server_input->setContextMenuPolicy(Qt::NoContextMenu);
     server_input->setFont(this->arbiter.forge().font(16));
     server_input->setAlignment(Qt::AlignCenter);
@@ -1190,14 +1236,14 @@ QWidget *JellyfinTab::settings_dialog_body()
     connect(server_input, &QLineEdit::textEdited, [this](QString text) { this->config->set_jellyfin_server_url(text); });
     layout->addWidget(server_input);
 
-    this->username_input = new QLineEdit(widget);
+    this->username_input = new QLineEdit(form);
     this->username_input->setContextMenuPolicy(Qt::NoContextMenu);
     this->username_input->setFont(this->arbiter.forge().font(16));
     this->username_input->setAlignment(Qt::AlignCenter);
     this->username_input->setPlaceholderText("Username");
     layout->addWidget(this->username_input);
 
-    this->password_input = new QLineEdit(widget);
+    this->password_input = new QLineEdit(form);
     this->password_input->setContextMenuPolicy(Qt::NoContextMenu);
     this->password_input->setFont(this->arbiter.forge().font(16));
     this->password_input->setAlignment(Qt::AlignCenter);
@@ -1205,11 +1251,11 @@ QWidget *JellyfinTab::settings_dialog_body()
     this->password_input->setPlaceholderText("Password");
     layout->addWidget(this->password_input);
 
-    QLabel *login_status = new QLabel(widget);
+    QLabel *login_status = new QLabel(form);
     login_status->setAlignment(Qt::AlignCenter);
     layout->addWidget(login_status);
 
-    QPushButton *login_button = new QPushButton("Log in", widget);
+    QPushButton *login_button = new QPushButton("Log in", form);
     connect(login_button, &QPushButton::clicked, [this, login_status] {
         login_status->setText("Logging in…");
         this->arbiter.system().jellyfin.authenticate(this->config->get_jellyfin_server_url(), this->username_input->text(), this->password_input->text());
@@ -1218,13 +1264,15 @@ QWidget *JellyfinTab::settings_dialog_body()
 
     connect(&this->arbiter.system().jellyfin, &Jellyfin::auth_finished, this, [this, login_status](bool success, QString error) {
         login_status->setText(success ? "Logged in" : error);
-        if (success)
+        if (success) {
             this->navigate(QString(), QString(), false);
+            this->content_stack->setCurrentWidget(this->browser_area);
+        }
     });
 
     layout->addWidget(Session::Forge::br());
 
-    QPushButton *sync_button = new QPushButton("Sync favourites now", widget);
+    QPushButton *sync_button = new QPushButton("Sync favourites now", form);
     connect(sync_button, &QPushButton::clicked, [this, sync_button] {
         sync_button->setEnabled(false);
         this->arbiter.system().jellyfin.sync_favorites();
@@ -1234,7 +1282,7 @@ QWidget *JellyfinTab::settings_dialog_body()
     });
     layout->addWidget(sync_button);
 
-    QLabel *sync_note = new QLabel("Favourites also sync automatically every 30 minutes", widget);
+    QLabel *sync_note = new QLabel("Favourites also sync automatically every 30 minutes", form);
     sync_note->setAlignment(Qt::AlignCenter);
     sync_note->setWordWrap(true);
     layout->addWidget(sync_note);

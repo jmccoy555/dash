@@ -54,6 +54,7 @@ class MediaPage : public QTabWidget, public Page {
 
    private:
     QList<QWidget *> tabs;  // in the same order added - index lines up with the tab label passed to addTab()
+    QList<QLabel *> tab_icons;  // one per tab, in the same order - see resize_tabs()
 
     void update_tab_visibility(QStringList disabled);
     // Icon-only tabs are narrow enough that QTabBar packs them off to the
@@ -195,7 +196,7 @@ class JellyfinTab : public QWidget {
     QWidget *header_widget();
     QWidget *seek_widget();
     QWidget *controls_widget();
-    QWidget *settings_dialog_body();
+    QWidget *settings_widget();
 };
 
 class YouTubeTab : public QWidget {
