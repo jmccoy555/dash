@@ -109,6 +109,7 @@ class OpenAutoPage : public QStackedWidget, public Page {
     };
 
     QWidget *connect_msg();
+    void create_worker();
 
     Config *config;
     OpenAutoFrame *frame;

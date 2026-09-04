@@ -1,5 +1,7 @@
 #include "app/pages/openauto.hpp"
 
+#include <QTimer>
+
 #include "app/config.hpp"
 #include "app/widgets/progress.hpp"
 #include "app/window.hpp"
@@ -413,14 +415,37 @@ OpenAutoPage::OpenAutoPage(Arbiter &arbiter, QWidget *parent)
 {
 }
 
+// OpenAutoWorker constructs openauto's App, which opens a plain TCP listener
+// on port 5000 for wireless AA (openauto/App.cpp's acceptor_) - if the
+// previous run's process hasn't fully released that port yet (observed
+// repeatedly - a restart can race the old process's teardown), that throws
+// a boost::system_error straight out of App's constructor. Uncaught, that
+// used to take the whole app down with it (see conversation - required a
+// full device reboot to clear more than once), even though nothing else
+// about the app depends on this succeeding on the first try. Retrying just
+// this worker a few seconds later instead lets the port clear on its own
+// without tearing down USB AA, DAB, Jellyfin, or anything else running
+// app-wide.
+void OpenAutoPage::create_worker()
+{
+    std::function<void(bool)> callback = [frame = this->frame](bool active) { frame->toggle(active); };
+    bool dark_mode = this->arbiter.theme().mode == Session::Theme::Dark;
+
+    try {
+        this->worker = new OpenAutoWorker(callback, dark_mode, this->frame, this->arbiter);
+    } catch (const std::exception &e) {
+        DASH_LOG(error) << "[OpenAuto] worker setup failed (" << e.what() << "), retrying in 3s";
+        QTimer::singleShot(3000, this, [this] { this->create_worker(); });
+    }
+}
+
 void OpenAutoPage::init()
 {
     this->config = Config::get_instance();
 
     this->frame = new OpenAutoFrame(this);
-
-    std::function<void(bool)> callback = [frame = this->frame](bool active) { frame->toggle(active); };
-    this->worker = new OpenAutoWorker(callback, this->arbiter.theme().mode == Session::Theme::Dark, frame, this->arbiter);
+    this->worker = nullptr;
+    this->create_worker();
 
     connect(this->frame, &OpenAutoFrame::toggle, [this](bool enable){
         this->setCurrentIndex(enable ? 1 : 0);
@@ -448,7 +473,11 @@ void OpenAutoPage::resizeEvent(QResizeEvent *event)
 {
     QWidget::resizeEvent(event);
     this->frame->resize(this->size());
-    this->worker->update_size();
+    // Null during the brief gap between create_worker() attempts if the
+    // first one hit a busy port and is waiting to retry - a resize (e.g.
+    // the initial layout pass) can land in that window.
+    if (this->worker)
+        this->worker->update_size();
 }
 
 QWidget *OpenAutoPage::connect_msg()
