@@ -28,6 +28,7 @@
 #include "app/services/clock.hpp"
 #include "app/services/jellyfin.hpp"
 #include "app/services/rear_display.hpp"
+#include "app/services/recently_played.hpp"
 #include "app/services/thumbnails.hpp"
 #include "app/services/youtube.hpp"
 #include "app/services/server.hpp"
@@ -156,6 +157,7 @@ class Session {
         YouTube youtube;
         RearDisplay rear_display;
         Thumbnails thumbnails;
+        RecentlyPlayed recently_played;
         Brightness brightness;
         uint8_t volume;
 

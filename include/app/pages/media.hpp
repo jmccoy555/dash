@@ -19,6 +19,7 @@
 #include "app/config.hpp"
 #include "app/pages/page.hpp"
 #include "app/services/jellyfin.hpp"
+#include "app/services/recently_played.hpp"
 #include "app/services/youtube.hpp"
 #include "app/widgets/selector.hpp"
 #include "app/widgets/tuner.hpp"
@@ -111,6 +112,10 @@ class DabPlayerTab : public QWidget {
     DabPlayerTab(Arbiter &arbiter, QWidget *parent = nullptr);
     ~DabPlayerTab();
 
+    // Retunes to a station by id - the Recent tab's entry point, same call
+    // a tile's own click handler makes.
+    void play_external(QString service_id);
+
    private:
     static QMap<QString, QFileInfo> get_plugins();
 
@@ -146,6 +151,11 @@ class LocalPlayerTab : public QWidget {
 
     static QString durationFmt(int total_ms);
 
+    // Rebuilds the playlist from path's containing folder (same as tapping
+    // it normally would) and plays it - the Recent tab's entry point for
+    // replaying a local track.
+    void play_external(QString path);
+
    private:
     Arbiter &arbiter;
 
@@ -166,7 +176,7 @@ class LocalPlayerTab : public QWidget {
     QPushButton *home_button;
     QLineEdit *search_input;
     QString current_path;
-    QString search_query;  // empty when not searching - populate() branches on this
+    QString search_query;  // empty when not searching - set by search(), read by populate_search_results()
     QMap<QString, QToolButton *> track_tiles;  // absolute path -> its tile, so the currently-playing one can be highlighted without a full rebuild
 };
 
@@ -175,6 +185,12 @@ class JellyfinTab : public QWidget {
 
    public:
     JellyfinTab(Arbiter &arbiter, QWidget *parent = nullptr);
+
+    // Plays a single item directly by id/type, with no sibling queue (unlike
+    // play_from(), which walks current_items) - the Recent tab's entry point,
+    // since history only remembers the item itself, not whatever list it was
+    // originally played from.
+    void play_external(QString item_id, Jellyfin::ItemType type);
 
    private:
     Arbiter &arbiter;
@@ -210,6 +226,12 @@ class YouTubeTab : public QWidget {
    public:
     YouTubeTab(Arbiter &arbiter, QWidget *parent = nullptr);
 
+    // Plays a video directly by id - the Recent tab's entry point. Reuses
+    // YouTube::play()'s existing cache-or-download behaviour and the
+    // ready_to_play handler already wired up in the constructor, so this is
+    // just triggering it rather than duplicating any playback logic.
+    void play_external(QString video_id);
+
    private:
     Arbiter &arbiter;
     QMediaPlayer *player;
@@ -234,6 +256,32 @@ class YouTubeTab : public QWidget {
     QWidget *header_widget();
     QWidget *seek_widget();
     QWidget *controls_widget();
+};
+
+// A tile grid over RecentlyPlayed's history, spanning every source that has
+// one - tapping a tile switches straight to that source's own tab and plays
+// it there (rather than trying to play it from here with no seek/controls
+// bar of its own), so one tap both takes you to the right place and starts
+// playback, instead of needing a second tap once you arrive.
+class RecentTab : public QWidget {
+    Q_OBJECT
+
+   public:
+    RecentTab(Arbiter &arbiter, QTabWidget *media_page, LocalPlayerTab *local_tab, JellyfinTab *jellyfin_tab,
+              YouTubeTab *dashtube_tab, DabPlayerTab *dab_tab, QWidget *parent = nullptr);
+
+   private:
+    Arbiter &arbiter;
+    QTabWidget *media_page;
+    LocalPlayerTab *local_tab;
+    JellyfinTab *jellyfin_tab;
+    YouTubeTab *dashtube_tab;
+    DabPlayerTab *dab_tab;
+    QScrollArea *area;
+    QWidget *container;
+
+    void populate();
+    void play(const RecentlyPlayed::Entry &entry);
 };
 
 // QVideoWidget renders through a native (X11) overlay window on the

@@ -232,6 +232,7 @@ Session::System::System(QSettings &settings, Arbiter &arbiter)
     , youtube(arbiter)
     , rear_display(arbiter)
     , thumbnails(arbiter)
+    , recently_played(arbiter)
     , brightness(settings)
     , volume(Session::System::get_current_volume())
 {

@@ -43,7 +43,7 @@ void SettingsPage::init()
 // (src/app/pages/media.cpp) - there's no runtime-queryable registry of the
 // Media page's own tabs the way Layout's Pages toggle has via
 // arbiter.layout().pages(), so this just has to be kept in sync by hand.
-static const QStringList MEDIA_TAB_NAMES = {"Radio", "DAB", "Bluetooth", "Local", "Jellyfin", "DashTube", "Dashcam"};
+static const QStringList MEDIA_TAB_NAMES = {"Recent", "Radio", "DAB", "Bluetooth", "Local", "Jellyfin", "DashTube", "Dashcam"};
 
 MediaSettingsTab::MediaSettingsTab(Arbiter &arbiter, QWidget *parent)
     : QWidget(parent)

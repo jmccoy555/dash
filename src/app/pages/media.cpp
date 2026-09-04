@@ -122,12 +122,22 @@ void MediaPage::init()
         this->tabs.append(widget);
     };
 
+    DabPlayerTab *dab_tab = new DabPlayerTab(this->arbiter, this);
+    LocalPlayerTab *local_tab = new LocalPlayerTab(this->arbiter, this);
+    JellyfinTab *jellyfin_tab = new JellyfinTab(this->arbiter, this);
+    YouTubeTab *dashtube_tab = new YouTubeTab(this->arbiter, this);
+
+    // Built after the four tabs above since it needs live pointers to them
+    // (replaying an entry means switching to the right one and calling its
+    // play_external()) - added to the bar first regardless, as the natural
+    // landing tab.
+    add_tab(new RecentTab(this->arbiter, this, local_tab, jellyfin_tab, dashtube_tab, dab_tab, this), "Recent", "history");
     add_tab(new RadioPlayerTab(this->arbiter, this), "Radio", "radio");
-    add_tab(new DabPlayerTab(this->arbiter, this), "DAB", "dab");
+    add_tab(dab_tab, "DAB", "dab");
     add_tab(new BluetoothPlayerTab(this->arbiter, this), "Bluetooth", "bluetooth");
-    add_tab(new LocalPlayerTab(this->arbiter, this), "Local", "library_music");
-    add_tab(new JellyfinTab(this->arbiter, this), "Jellyfin", "video_library");
-    add_tab(new YouTubeTab(this->arbiter, this), "DashTube", "smart_display");
+    add_tab(local_tab, "Local", "library_music");
+    add_tab(jellyfin_tab, "Jellyfin", "video_library");
+    add_tab(dashtube_tab, "DashTube", "smart_display");
     add_tab(new DashcamTab(this->arbiter, this), "Dashcam", "videocam");
 
     // Tabs are still fully constructed either way (their services - Jellyfin,
@@ -630,12 +640,21 @@ QPushButton *DabPlayerTab::service_tile(DabService service)
     tile->setFont(this->arbiter.forge().font(16));
 
     QString id = service.id;
-    connect(tile, &QPushButton::clicked, [this, id] {
+    QString label = service.label;
+    connect(tile, &QPushButton::clicked, [this, id, label] {
         if (DabPlugin *plugin = qobject_cast<DabPlugin *>(this->loader.instance()))
             plugin->play(id);
+
+        this->arbiter.system().recently_played.record({"DAB", id, label, QString(), 0});
     });
 
     return tile;
+}
+
+void DabPlayerTab::play_external(QString service_id)
+{
+    if (DabPlugin *plugin = qobject_cast<DabPlugin *>(this->loader.instance()))
+        plugin->play(service_id);
 }
 
 QWidget *DabPlayerTab::dialog_body()
@@ -835,12 +854,14 @@ QToolButton *LocalPlayerTab::build_track_tile(QString track_path, QStringList si
     // views doesn't stop whatever's currently playing. Rebuilt from
     // whatever's currently listed (a folder's tracks, or a search's
     // matches) so next/prev walk through that same set.
-    connect(tile, &QToolButton::clicked, [this, siblings, index] {
+    connect(tile, &QToolButton::clicked, [this, siblings, index, track_path, title] {
         this->player->playlist()->clear();
         for (const QString &p : siblings)
             this->player->playlist()->addMedia(QMediaContent(QUrl::fromLocalFile(p)));
         this->player->playlist()->setCurrentIndex(index);
         this->player->play();
+
+        this->arbiter.system().recently_played.record({"Local", track_path, title, QString(), 0});
     });
 
     return tile;
@@ -907,6 +928,32 @@ void LocalPlayerTab::populate_search_results()
 
     container_layout->addWidget(grid_widget);
     static_cast<QVBoxLayout *>(container_layout)->addStretch();
+}
+
+void LocalPlayerTab::play_external(QString path)
+{
+    QDir dir(QFileInfo(path).absolutePath());
+    QStringList track_names = dir.entryList(QStringList() << "*.flac" << "*.m4a" << "*.mp3", QDir::Files | QDir::Readable, QDir::Name | QDir::IgnoreCase);
+
+    QStringList track_paths;
+    int index = 0;
+    for (const QString &name : track_names) {
+        QString p = dir.absoluteFilePath(name);
+        if (p == path)
+            index = track_paths.size();
+        track_paths.append(p);
+    }
+
+    this->player->playlist()->clear();
+    for (const QString &p : track_paths)
+        this->player->playlist()->addMedia(QMediaContent(QUrl::fromLocalFile(p)));
+    this->player->playlist()->setCurrentIndex(index);
+    this->player->play();
+
+    // So the folder grid reflects what's now playing once the user actually
+    // looks at this tab, same as tapping there normally would.
+    this->search_query.clear();
+    this->navigate(dir.absolutePath());
 }
 
 QWidget *LocalPlayerTab::seek_widget()
@@ -1217,6 +1264,25 @@ void JellyfinTab::play_from(int index)
 
     this->content_stack->setCurrentWidget(target.type == Jellyfin::ItemType::Video ? (QWidget *)this->video_widget : (QWidget *)this->browser_area);
     if (target.type == Jellyfin::ItemType::Video)
+        this->arbiter.system().rear_display.show_view("Jellyfin");
+    this->player->play();
+
+    this->arbiter.system().recently_played.record(
+        {"Jellyfin", target.id, target.name, this->arbiter.system().jellyfin.image_url(target.id).toString(), static_cast<int>(target.type)});
+}
+
+void JellyfinTab::play_external(QString item_id, Jellyfin::ItemType type)
+{
+    QMediaPlaylist *playlist = this->player->playlist();
+    playlist->clear();
+
+    QString cached = this->arbiter.system().jellyfin.cached_path(item_id);
+    QUrl url = cached.isEmpty() ? this->arbiter.system().jellyfin.stream_url(item_id, type) : QUrl::fromLocalFile(cached);
+    playlist->addMedia(QMediaContent(url));
+    playlist->setCurrentIndex(0);
+
+    this->content_stack->setCurrentWidget(type == Jellyfin::ItemType::Video ? (QWidget *)this->video_widget : (QWidget *)this->browser_area);
+    if (type == Jellyfin::ItemType::Video)
         this->arbiter.system().rear_display.show_view("Jellyfin");
     this->player->play();
 }
@@ -1629,9 +1695,21 @@ void YouTubeTab::play_from(int index)
     if (index < 0 || index >= this->current_results.size())
         return;
 
+    const YouTube::Video &video = this->current_results[index];
+
     this->now_playing_index = index;
     this->status_label->setText("Downloading…");
-    this->arbiter.system().youtube.play(this->current_results[index].id);
+    this->arbiter.system().youtube.play(video.id);
+
+    this->arbiter.system().recently_played.record(
+        {"DashTube", video.id, video.title, QString("https://i.ytimg.com/vi/%1/mqdefault.jpg").arg(video.id), 0});
+}
+
+void YouTubeTab::play_external(QString video_id)
+{
+    this->now_playing_index = -1;
+    this->status_label->setText("Downloading…");
+    this->arbiter.system().youtube.play(video_id);
 }
 
 QWidget *YouTubeTab::header_widget()
@@ -1766,6 +1844,90 @@ QWidget *YouTubeTab::controls_widget()
     layout->addWidget(forward_button);
 
     return widget;
+}
+
+RecentTab::RecentTab(Arbiter &arbiter, QTabWidget *media_page, LocalPlayerTab *local_tab, JellyfinTab *jellyfin_tab,
+                      YouTubeTab *dashtube_tab, DabPlayerTab *dab_tab, QWidget *parent)
+    : QWidget(parent)
+    , arbiter(arbiter)
+    , media_page(media_page)
+    , local_tab(local_tab)
+    , jellyfin_tab(jellyfin_tab)
+    , dashtube_tab(dashtube_tab)
+    , dab_tab(dab_tab)
+    , area(new QScrollArea(this))
+    , container(new QWidget(this->area))
+{
+    new QVBoxLayout(this->container);
+    this->area->setWidget(this->container);
+    this->area->setWidgetResizable(true);
+    this->area->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    this->area->setFrameShape(QFrame::NoFrame);
+    Session::Forge::to_touch_scroller(this->area);
+
+    connect(&this->arbiter.system().recently_played, &RecentlyPlayed::changed, this, [this] { this->populate(); });
+
+    QLabel *title = new QLabel("Recent", this);
+    title->setAlignment(Qt::AlignCenter);
+
+    QVBoxLayout *layout = new QVBoxLayout(this);
+    layout->addWidget(title);
+    layout->addWidget(this->area, 1);
+
+    this->populate();
+}
+
+void RecentTab::populate()
+{
+    QLayout *container_layout = this->container->layout();
+    QLayoutItem *child;
+    while ((child = container_layout->takeAt(0)) != nullptr) {
+        delete child->widget();
+        delete child;
+    }
+
+    QWidget *grid_widget = new QWidget(this->container);
+    QGridLayout *grid = new QGridLayout(grid_widget);
+    grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    const int columns = 9;
+    int i = 0;
+
+    const QList<RecentlyPlayed::Entry> &entries = this->arbiter.system().recently_played.entries();
+    for (const RecentlyPlayed::Entry &entry : entries) {
+        QPixmap local_pixmap;
+        if (entry.source == "Local")
+            local_pixmap = local_track_art(entry.id);
+
+        QToolButton *tile = this->arbiter.forge().media_tile(entry.title, entry.image_url, local_pixmap);
+        connect(tile, &QToolButton::clicked, [this, entry] { this->play(entry); });
+        grid->addWidget(tile, i / columns, i % columns);
+        i++;
+    }
+
+    if (entries.isEmpty()) {
+        QLabel *empty = new QLabel("Nothing played yet", grid_widget);
+        grid->addWidget(empty, 0, 0);
+    }
+
+    container_layout->addWidget(grid_widget);
+    static_cast<QVBoxLayout *>(container_layout)->addStretch();
+}
+
+void RecentTab::play(const RecentlyPlayed::Entry &entry)
+{
+    if (entry.source == "Local") {
+        this->local_tab->play_external(entry.id);
+        this->media_page->setCurrentWidget(this->local_tab);
+    } else if (entry.source == "Jellyfin") {
+        this->jellyfin_tab->play_external(entry.id, static_cast<Jellyfin::ItemType>(entry.variant));
+        this->media_page->setCurrentWidget(this->jellyfin_tab);
+    } else if (entry.source == "DashTube") {
+        this->dashtube_tab->play_external(entry.id);
+        this->media_page->setCurrentWidget(this->dashtube_tab);
+    } else if (entry.source == "DAB") {
+        this->dab_tab->play_external(entry.id);
+        this->media_page->setCurrentWidget(this->dab_tab);
+    }
 }
 
 DashcamVideoView::DashcamVideoView(QGraphicsScene *scene, QGraphicsVideoItem *item, QWidget *parent)
