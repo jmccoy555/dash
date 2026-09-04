@@ -691,6 +691,7 @@ LocalPlayerTab::LocalPlayerTab(Arbiter &arbiter, QWidget *parent)
     , browser_container(new QWidget(this->browser_area))
     , path_label(new QLabel(this))
     , home_button(nullptr)
+    , search_input(nullptr)
 {
     QMediaPlaylist *playlist = new QMediaPlaylist(this);
     playlist->setPlaybackMode(QMediaPlaylist::Loop);
@@ -740,7 +741,21 @@ QWidget *LocalPlayerTab::header_widget()
 
     this->path_label->setAlignment(Qt::AlignCenter);
     layout->addWidget(this->path_label, 1);
-    layout->addSpacing(24);  // balances home_button's width so path_label stays visually centered
+
+    this->search_input = new QLineEdit(widget);
+    this->search_input->setContextMenuPolicy(Qt::NoContextMenu);
+    this->search_input->setFont(this->arbiter.forge().font(16));
+    this->search_input->setAlignment(Qt::AlignCenter);
+    this->search_input->setPlaceholderText("Search Local");
+    this->search_input->setFixedWidth(300 * this->arbiter.layout().scale);
+    connect(this->search_input, &QLineEdit::returnPressed, [this] { this->search(); });
+    layout->addWidget(this->search_input);
+
+    QPushButton *search_button = new QPushButton(widget);
+    search_button->setFlat(true);
+    this->arbiter.forge().iconize("search", search_button, 24);
+    connect(search_button, &QPushButton::clicked, [this] { this->search(); });
+    layout->addWidget(search_button);
 
     return widget;
 }
@@ -797,26 +812,95 @@ void LocalPlayerTab::populate(QString path)
         track_paths.append(dir.absoluteFilePath(name));
 
     for (int t = 0; t < track_paths.size(); t++) {
-        QString track_path = track_paths[t];
-        QString title = QFileInfo(track_path).completeBaseName();
+        QToolButton *tile = this->build_track_tile(track_paths[t], track_paths, t);
+        grid->addWidget(tile, i / columns, i % columns);
+        i++;
+    }
 
-        QToolButton *tile = this->arbiter.forge().media_tile(title, QString(), local_track_art(track_path));
-        tile->setCheckable(true);
-        tile->setChecked(this->player->playlist()->currentMedia().canonicalUrl().toLocalFile() == track_path);
-        this->track_tiles[track_path] = tile;
+    container_layout->addWidget(grid_widget);
+    static_cast<QVBoxLayout *>(container_layout)->addStretch();
+}
 
-        // Only touches the active playlist here, when a track is actually
-        // chosen to play - browsing folders doesn't rebuild it, so
-        // navigating to another folder to see what's in it doesn't stop
-        // whatever's currently playing. Rebuilt from what's currently
-        // listed so next/prev still walk through this folder's tracks.
-        connect(tile, &QToolButton::clicked, [this, track_paths, t] {
-            this->player->playlist()->clear();
-            for (const QString &p : track_paths)
-                this->player->playlist()->addMedia(QMediaContent(QUrl::fromLocalFile(p)));
-            this->player->playlist()->setCurrentIndex(t);
-            this->player->play();
-        });
+QToolButton *LocalPlayerTab::build_track_tile(QString track_path, QStringList siblings, int index)
+{
+    QString title = QFileInfo(track_path).completeBaseName();
+
+    QToolButton *tile = this->arbiter.forge().media_tile(title, QString(), local_track_art(track_path));
+    tile->setCheckable(true);
+    tile->setChecked(this->player->playlist()->currentMedia().canonicalUrl().toLocalFile() == track_path);
+    this->track_tiles[track_path] = tile;
+
+    // Only touches the active playlist here, when a track is actually
+    // chosen to play - browsing/searching doesn't rebuild it, so switching
+    // views doesn't stop whatever's currently playing. Rebuilt from
+    // whatever's currently listed (a folder's tracks, or a search's
+    // matches) so next/prev walk through that same set.
+    connect(tile, &QToolButton::clicked, [this, siblings, index] {
+        this->player->playlist()->clear();
+        for (const QString &p : siblings)
+            this->player->playlist()->addMedia(QMediaContent(QUrl::fromLocalFile(p)));
+        this->player->playlist()->setCurrentIndex(index);
+        this->player->play();
+    });
+
+    return tile;
+}
+
+void LocalPlayerTab::search()
+{
+    QString query = this->search_input->text().trimmed();
+    if (query.isEmpty())
+        return;
+
+    this->search_query = query;
+    this->populate_search_results();
+}
+
+void LocalPlayerTab::populate_search_results()
+{
+    this->track_tiles.clear();
+
+    QLayout *container_layout = this->browser_container->layout();
+    QLayoutItem *child;
+    while ((child = container_layout->takeAt(0)) != nullptr) {
+        delete child->widget();
+        delete child;
+    }
+
+    this->path_label->setText(QString("Search: \"%1\"").arg(this->search_query));
+
+    // Always searches the whole library from media_home down, regardless of
+    // which folder browsing was left in - matches how DashTube/Jellyfin's
+    // search works (the whole library, not just whatever's currently in
+    // view), and is a lot more useful than a folder-scoped search would be.
+    QStringList track_paths;
+    QDirIterator it(this->config->get_media_home(), QStringList() << "*.flac" << "*.m4a" << "*.mp3",
+                     QDir::Files | QDir::Readable, QDirIterator::Subdirectories);
+    while (it.hasNext() && track_paths.size() < 300) {
+        QString path = it.next();
+        if (QFileInfo(path).completeBaseName().contains(this->search_query, Qt::CaseInsensitive))
+            track_paths.append(path);
+    }
+    track_paths.sort(Qt::CaseInsensitive);
+
+    QWidget *grid_widget = new QWidget(this->browser_container);
+    QGridLayout *grid = new QGridLayout(grid_widget);
+    grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    const int columns = 9;
+    int i = 0;
+
+    QToolButton *clear = this->arbiter.forge().media_tile("✕ Clear search", QString());
+    QString return_path = this->current_path;
+    connect(clear, &QToolButton::clicked, [this, return_path] {
+        this->search_query.clear();
+        this->search_input->clear();
+        this->navigate(return_path);
+    });
+    grid->addWidget(clear, 0, 0);
+    i++;
+
+    for (int t = 0; t < track_paths.size(); t++) {
+        QToolButton *tile = this->build_track_tile(track_paths[t], track_paths, t);
         grid->addWidget(tile, i / columns, i % columns);
         i++;
     }

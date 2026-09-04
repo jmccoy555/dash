@@ -154,14 +154,19 @@ class LocalPlayerTab : public QWidget {
     QWidget *controls_widget();
     void navigate(QString path);
     void populate(QString path);
+    void search();
+    void populate_search_results();
+    QToolButton *build_track_tile(QString track_path, QStringList siblings, int index);
 
     Config *config;
     QMediaPlayer *player;
     QScrollArea *browser_area;
-    QWidget *browser_container;  // the grid - rebuilt (cleared + repopulated) on every navigate(), same pattern as JellyfinTab
+    QWidget *browser_container;  // the grid - rebuilt (cleared + repopulated) on every navigate()/search(), same pattern as JellyfinTab
     QLabel *path_label;
     QPushButton *home_button;
+    QLineEdit *search_input;
     QString current_path;
+    QString search_query;  // empty when not searching - populate() branches on this
     QMap<QString, QToolButton *> track_tiles;  // absolute path -> its tile, so the currently-playing one can be highlighted without a full rebuild
 };
 
