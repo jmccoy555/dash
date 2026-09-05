@@ -108,6 +108,24 @@ class Config : public QObject {
         this->settings.setValue("Pages/Media/YouTube/cache_dir", this->youtube_cache_dir);
     }
 
+    // Empty host disables it - there's no GPS hardware on this box itself,
+    // this points at a gpsd instance elsewhere on the car's network (e.g.
+    // a modem/GNSS box) that can see the sky better than a phone stuck in a
+    // cupholder. Feeds Android Auto's LOCATION sensor - see Gps service.
+    inline QString get_gps_host() { return this->gps_host; }
+    inline void set_gps_host(QString gps_host)
+    {
+        this->gps_host = gps_host;
+        this->settings.setValue("AndroidAuto/Gps/host", this->gps_host);
+    }
+
+    inline int get_gps_port() { return this->gps_port; }
+    inline void set_gps_port(int gps_port)
+    {
+        this->gps_port = gps_port;
+        this->settings.setValue("AndroidAuto/Gps/port", this->gps_port);
+    }
+
     // Which of the Media page's own tabs (by their tab label - "Radio",
     // "DAB", "Bluetooth", "Local", "Jellyfin", "YouTube", "Dashcam") are
     // hidden. Absent from this list = shown, so a fresh install with no
@@ -257,6 +275,8 @@ class Config : public QObject {
     QString jellyfin_device_id;
     QString jellyfin_offline_dir;
     QString youtube_cache_dir;
+    QString gps_host;
+    int gps_port;
     QStringList disabled_media_tabs;
     bool si_units;
     ICANBus::VehicleBusType vehicle_can_bus;

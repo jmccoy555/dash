@@ -131,6 +131,8 @@ QWidget *MainSettingsTab::settings_widget()
     layout->addWidget(Session::Forge::br(), 1);
     layout->addWidget(this->server_row_widget(), 1);
     layout->addWidget(Session::Forge::br(), 1);
+    layout->addWidget(this->gps_row_widget(), 1);
+    layout->addWidget(Session::Forge::br(), 1);
     layout->addWidget(this->controls_row_widget(), 1);
 
     QScrollArea *scroll_area = new QScrollArea(this);
@@ -271,6 +273,56 @@ QWidget *MainSettingsTab::server_row_widget()
     });
 
     layout->addWidget(toggle, 1, Qt::AlignHCenter);
+
+    return widget;
+}
+
+// This app has no GPS hardware of its own - points at a gpsd instance
+// elsewhere on the car's network (e.g. a modem/GNSS box with a clearer view
+// of the sky than a phone in a cupholder) and feeds whatever fixes come
+// back into Android Auto's own LOCATION sensor. Deliberately a plain page
+// here rather than a Dialog popup like most other settings - the on-screen
+// keyboard doesn't reach a QLineEdit living in a Dialog's own separate
+// top-level window (see conversation, same issue Jellyfin's login hit),
+// and unlike that case there's no small enclosing view to move instead.
+QWidget *MainSettingsTab::gps_row_widget()
+{
+    QWidget *widget = new QWidget(this);
+    QHBoxLayout *layout = new QHBoxLayout(widget);
+
+    QLabel *label = new QLabel("GPS (gpsd)", widget);
+    layout->addWidget(label, 1);
+
+    Config *config = Config::get_instance();
+
+    QLineEdit *host_input = new QLineEdit(config->get_gps_host(), widget);
+    host_input->setContextMenuPolicy(Qt::NoContextMenu);
+    host_input->setAlignment(Qt::AlignCenter);
+    host_input->setPlaceholderText("host");
+
+    QLineEdit *port_input = new QLineEdit(QString::number(config->get_gps_port()), widget);
+    port_input->setContextMenuPolicy(Qt::NoContextMenu);
+    port_input->setAlignment(Qt::AlignCenter);
+    port_input->setValidator(new QIntValidator(1, 65535, port_input));
+    port_input->setFixedWidth(80 * this->arbiter.layout().scale);
+
+    QLabel *status_label = new QLabel(this->arbiter.system().gps.status(), widget);
+    connect(&this->arbiter.system().gps, &Gps::status_changed, status_label, [status_label](QString status) {
+        status_label->setText(status);
+    });
+
+    auto apply = [this, host_input, port_input] {
+        Config *config = Config::get_instance();
+        config->set_gps_host(host_input->text().trimmed());
+        config->set_gps_port(port_input->text().toInt());
+        this->arbiter.system().gps.configure(config->get_gps_host(), config->get_gps_port());
+    };
+    connect(host_input, &QLineEdit::editingFinished, widget, apply);
+    connect(port_input, &QLineEdit::editingFinished, widget, apply);
+
+    layout->addWidget(host_input, 2);
+    layout->addWidget(port_input, 1);
+    layout->addWidget(status_label, 2);
 
     return widget;
 }

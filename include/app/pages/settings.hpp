@@ -36,6 +36,7 @@ class MainSettingsTab : public QWidget {
     QWidget *cursor_row_widget();
     QWidget *volume_row_widget();
     QWidget *server_row_widget();
+    QWidget *gps_row_widget();
     QWidget *controls_row_widget();
     QWidget *controls_widget();
 

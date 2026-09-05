@@ -26,6 +26,7 @@
 #include "app/quick_views/quick_view.hpp"
 #include "app/services/bluetooth.hpp"
 #include "app/services/clock.hpp"
+#include "app/services/gps.hpp"
 #include "app/services/jellyfin.hpp"
 #include "app/services/rear_display.hpp"
 #include "app/services/recently_played.hpp"
@@ -158,6 +159,7 @@ class Session {
         RearDisplay rear_display;
         Thumbnails thumbnails;
         RecentlyPlayed recently_played;
+        Gps gps;
         Brightness brightness;
         uint8_t volume;
 
