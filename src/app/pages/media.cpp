@@ -759,7 +759,13 @@ LocalPlayerTab::LocalPlayerTab(Arbiter &arbiter, QWidget *parent)
     layout->addWidget(this->seek_widget());
     layout->addWidget(this->controls_widget());
 
-    this->navigate(this->config->get_media_home());
+    // Deferred rather than called directly here - this runs during the
+    // whole app's construction, before the main window's first show(), so
+    // browser_area has no real geometry yet and columns_for_width() would
+    // permanently bake in 1 column (confirmed live). Letting the event
+    // loop turn over once first means the window's actually been shown and
+    // laid out by the time this runs.
+    QTimer::singleShot(0, this, [this] { this->navigate(this->config->get_media_home()); });
 }
 
 QWidget *LocalPlayerTab::header_widget()
@@ -2068,7 +2074,9 @@ RecentTab::RecentTab(Arbiter &arbiter, QTabWidget *media_page, LocalPlayerTab *l
     layout->addWidget(title);
     layout->addWidget(this->area, 1);
 
-    this->populate();
+    // Deferred for the same reason as LocalPlayerTab's initial navigate()
+    // call - see its comment.
+    QTimer::singleShot(0, this, [this] { this->populate(); });
 }
 
 void RecentTab::populate()
