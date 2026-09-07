@@ -114,6 +114,19 @@ class ResizeWatcher : public QObject {
     std::function<void()> callback;
 };
 
+// "Artist — Album", or whichever half is actually known - shared between
+// BluetoothPlayerTab's two independent metadata sources (BlueZ's AVRCP
+// data and AA's own media metadata channel), which both need the same
+// "don't show an empty dash when one half is missing" handling.
+QString compose_track_subtitle(QString artist, QString album)
+{
+    if (artist.isEmpty())
+        return album;
+    if (album.isEmpty())
+        return artist;
+    return QString("%1 — %2").arg(artist, album);
+}
+
 int columns_for_width(QScrollArea *area, int tile_width, int max_columns)
 {
     // QGridLayout puts real spacing between columns (confirmed live -
@@ -159,7 +172,11 @@ void MediaPage::init()
     // MediaSettingsTab::MEDIA_TAB_NAMES in settings.cpp, which has to stay
     // in sync with this list by hand), so it's stashed on the widget itself
     // via setProperty() rather than shown as the tab's actual label.
-    int icon_size = 32 * this->arbiter.layout().scale;  // matches the rail's own iconize(icon, button, 32) in window.cpp
+    // A bit bigger than the rail's own 32 (see window.cpp's iconize call) -
+    // matching the raw icon size left this row looking visually thinner/
+    // shorter than the rail, since nothing else here pads it out the way
+    // the rail's own button style does (see conversation).
+    int icon_size = 40 * this->arbiter.layout().scale;
 
     // The tab's own icon slot only ever gets sized to the icon itself, sat
     // at the tab's leading edge - fine when a label follows it, but with no
@@ -257,50 +274,51 @@ BluetoothPlayerTab::BluetoothPlayerTab(Arbiter &arbiter, QWidget *parent)
 
 QWidget *BluetoothPlayerTab::track_widget()
 {
+    // Matches the rest of the app's now-playing look (centered art, big
+    // title, smaller "Artist — Album" subtitle - see DAB/Jellyfin) rather
+    // than the old stacked label-per-field form this used to be (see
+    // conversation - "update the bluetooth page to match the rest").
     BluezQt::MediaPlayerPtr media_player = this->arbiter.system().bluetooth.get_media_player().second;
     AAHandler *aa_handler = this->arbiter.android_auto().handler;
 
     QWidget *widget = new QWidget(this);
     QVBoxLayout *layout = new QVBoxLayout(widget);
+    layout->setAlignment(Qt::AlignHCenter);
 
-    QLabel *artist_hdr = new QLabel("Artist", widget);
-    QLabel *artist = new QLabel((media_player != nullptr) ? media_player->track().artist() : QString(), widget);
-    artist->setIndent(16);
-    layout->addWidget(artist_hdr);
-    layout->addWidget(artist);
+    int art_size = 240 * this->arbiter.layout().scale;
+    QLabel *album_art = new QLabel(widget);
+    album_art->setFixedSize(art_size, art_size);
+    album_art->setAlignment(Qt::AlignCenter);
+    layout->addWidget(album_art, 0, Qt::AlignHCenter);
 
-    QLabel *album_hdr = new QLabel("Album", widget);
-    QLabel *album = new QLabel((media_player != nullptr) ? media_player->track().album() : QString(), widget);
-    album->setIndent(16);
-    layout->addWidget(album_hdr);
-    layout->addWidget(album);
-
-    QLabel *title_hdr = new QLabel("Title", widget);
     QLabel *title = new QLabel((media_player != nullptr) ? media_player->track().title() : QString(), widget);
-    title->setIndent(16);
-    layout->addWidget(title_hdr);
+    title->setAlignment(Qt::AlignCenter);
+    title->setFont(this->arbiter.forge().font(24));
     layout->addWidget(title);
 
-    QLabel *albumArt = new QLabel(widget);
-    layout->addWidget(albumArt);
+    QLabel *subtitle = new QLabel(widget);
+    subtitle->setAlignment(Qt::AlignCenter);
+    subtitle->setFont(this->arbiter.forge().font(16));
+    subtitle->setText(compose_track_subtitle(
+        (media_player != nullptr) ? media_player->track().artist() : QString(),
+        (media_player != nullptr) ? media_player->track().album() : QString()));
+    layout->addWidget(subtitle);
 
-    connect(&this->arbiter.system().bluetooth, &Bluetooth::media_player_track_changed, [artist, album, title](BluezQt::MediaPlayerTrack track){
-        artist->setText(track.artist());
-        album->setText(track.album());
+    connect(&this->arbiter.system().bluetooth, &Bluetooth::media_player_track_changed, [title, subtitle](BluezQt::MediaPlayerTrack track){
         title->setText(track.title());
+        subtitle->setText(compose_track_subtitle(track.artist(), track.album()));
     });
-    connect(aa_handler, &AAHandler::aa_media_metadata_update, [artist, album, title, albumArt](const aasdk::proto::messages::MediaInfoChannelMetadataData& metadata){
+    connect(aa_handler, &AAHandler::aa_media_metadata_update, [title, subtitle, album_art, art_size](const aasdk::proto::messages::MediaInfoChannelMetadataData& metadata){
         title->setText(QString::fromStdString(metadata.track_name()));
-        if(metadata.has_artist_name()) artist->setText(QString::fromStdString(metadata.artist_name()));
-        if(metadata.has_album_name()) album->setText(QString::fromStdString(metadata.album_name()));
-        if(metadata.has_album_art()){
+        subtitle->setText(compose_track_subtitle(
+            metadata.has_artist_name() ? QString::fromStdString(metadata.artist_name()) : QString(),
+            metadata.has_album_name() ? QString::fromStdString(metadata.album_name()) : QString()));
+        if (metadata.has_album_art()) {
             QImage art;
             art.loadFromData(QByteArray::fromStdString(metadata.album_art()));
-            albumArt->setPixmap(QPixmap::fromImage(art));
+            album_art->setPixmap(QPixmap::fromImage(art).scaled(art_size, art_size, Qt::KeepAspectRatio, Qt::SmoothTransformation));
         }
-    
     });
-
 
     return widget;
 }
