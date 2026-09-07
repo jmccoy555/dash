@@ -1,10 +1,14 @@
 #include <algorithm>
 #include <functional>
 
+#include <QApplication>
 #include <QDir>
 #include <QHBoxLayout>
 #include <QKeySequence>
+#include <QLineEdit>
+#include <QPlainTextEdit>
 #include <QPushButton>
+#include <QTextEdit>
 #include <QTimer>
 
 #include <QDebug>
@@ -143,6 +147,21 @@ bool ActionEventFilter::eventFilter(QObject* obj, QEvent* event)
         default:
             return false;
     }
+    // A bound action key (e.g. "2") is just as much a real character
+    // someone typing into a field would expect it to type - GPS host/port,
+    // Jellyfin username/password etc. all sit on this same event path
+    // ahead of every other widget, and were silently swallowing that
+    // keystroke as an action trigger instead of ever reaching the field
+    // (confirmed live - a password containing "2", and separately an IP
+    // typed into GPS settings, both lost exactly the digits that happen to
+    // be bound actions). Whenever a text-entry widget currently has focus,
+    // this simply gets out of the way entirely and lets the keystroke
+    // reach it normally, rather than needing every action's key chosen
+    // around whatever someone might ever type somewhere.
+    QWidget *focused = QApplication::focusWidget();
+    if (qobject_cast<QLineEdit *>(focused) || qobject_cast<QTextEdit *>(focused) || qobject_cast<QPlainTextEdit *>(focused))
+        return false;
+
     QKeyEvent* key = static_cast<QKeyEvent*>(event);
     if (!key->isAutoRepeat())
     {
