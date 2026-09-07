@@ -35,6 +35,8 @@ Jellyfin::Jellyfin(Arbiter &arbiter)
         config->set_jellyfin_device_id(this->device_id);
     }
 
+    this->load_offline_index();
+
     // Deferred rather than called directly here - Jellyfin is constructed
     // very early in app bootstrap, before the event loop is running (see
     // net()'s comment for the crash that taught us that lesson).
@@ -433,12 +435,71 @@ void Jellyfin::download_next()
             // dump until its parent directory was pre-created). Id is
             // always filesystem-safe and stable across renames.
             QFile file(Config::get_instance()->get_jellyfin_offline_dir() + "/" + item.id + "." + ext);
-            if (file.open(QIODevice::WriteOnly) && file.write(data) == data.size())
+            if (file.open(QIODevice::WriteOnly) && file.write(data) == data.size()) {
                 this->sync_done++;
+                QJsonObject entry;
+                entry["name"] = item.name;
+                entry["type"] = item.type == ItemType::Video ? "Video" : "Audio";
+                this->offline_index[item.id] = entry;
+                this->save_offline_index();
+            }
             else
                 this->sync_failed++;
         }
 
         this->download_next();
     });
+}
+
+QString Jellyfin::offline_index_path() const
+{
+    return Config::get_instance()->get_jellyfin_offline_dir() + "/.index.json";
+}
+
+void Jellyfin::load_offline_index()
+{
+    QFile file(this->offline_index_path());
+    if (!file.open(QIODevice::ReadOnly))
+        return;
+
+    this->offline_index = QJsonDocument::fromJson(file.readAll()).object();
+}
+
+void Jellyfin::save_offline_index() const
+{
+    // Best-effort - a failed write just means the next sync (or app
+    // restart) re-derives stale/missing entries as id-named rather than
+    // losing anything already downloaded.
+    QFile file(this->offline_index_path());
+    if (file.open(QIODevice::WriteOnly))
+        file.write(QJsonDocument(this->offline_index).toJson(QJsonDocument::Compact));
+}
+
+QList<QPair<QString, QString>> Jellyfin::offline_audio_tracks() const
+{
+    QList<QPair<QString, QString>> tracks;
+
+    QDir dir(Config::get_instance()->get_jellyfin_offline_dir());
+    for (const QFileInfo &info : dir.entryInfoList(QDir::Files, QDir::Name)) {
+        // .index.json itself, or anything else that isn't a synced item.
+        if (info.fileName().startsWith('.'))
+            continue;
+
+        QString id = info.completeBaseName();
+        QJsonObject entry = this->offline_index.value(id).toObject();
+        // Video syncs (movies/episodes) also live in this directory - see
+        // download_next() - but have no place in a music browser.
+        if (entry.value("type").toString() != "Audio")
+            continue;
+
+        QString name = entry.value("name").toString();
+        // Index entry missing (older download, or a write that failed) -
+        // still surface it rather than hide a real synced file.
+        if (name.isEmpty())
+            name = id;
+
+        tracks.append({info.absoluteFilePath(), name});
+    }
+
+    return tracks;
 }

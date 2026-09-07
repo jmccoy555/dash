@@ -5,6 +5,7 @@
 #include <QMap>
 #include <QNetworkAccessManager>
 #include <QObject>
+#include <QPair>
 #include <QString>
 #include <QTimer>
 #include <QUrl>
@@ -46,6 +47,13 @@ class Jellyfin : public QObject {
     QUrl image_url(QString itemId) const;  // Primary image - empty/404 if the item has none, callers should just leave their placeholder in that case
     QString cached_path(QString itemId) const;  // "" if this item hasn't been synced locally
 
+    // Every currently-synced Audio item, as (absolute file path, display
+    // name) pairs - lets LocalPlayerTab fold this straight into its own
+    // browsing/search so synced tracks show up as themselves instead of
+    // living behind a separate "jellyfin" folder full of id-named files
+    // no one taps into (see conversation).
+    QList<QPair<QString, QString>> offline_audio_tracks() const;
+
    private:
     QString auth_header(bool with_token) const;
     Item parse_item(QJsonObject object) const;
@@ -53,6 +61,16 @@ class Jellyfin : public QObject {
     void download_next();
     void schedule_auto_sync();  // starts (or restarts) periodic favourites sync - called after login and, if already logged in, once at startup
     QNetworkAccessManager *net();  // lazily constructed - see constructor comment
+
+    // Downloaded files are named <itemId>.<ext> (see download_next() - a
+    // title/artist isn't filesystem-safe and isn't stable across renames),
+    // so the real name/type has to be remembered separately for anything
+    // that wants to display them as themselves - this is that record,
+    // persisted alongside the downloads themselves so it survives restarts.
+    QString offline_index_path() const;
+    void load_offline_index();
+    void save_offline_index() const;
+    QJsonObject offline_index;  // itemId -> {"name": ..., "type": "Audio"|"Video"}
 
     Arbiter &arbiter;
     QNetworkAccessManager *network = nullptr;
