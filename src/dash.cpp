@@ -4,6 +4,7 @@
 
 #include "app/window.hpp"
 #include "app/action.hpp"
+#include "app/utilities/floating_keyboard.hpp"
 
 int main(int argc, char *argv[])
 {
@@ -55,6 +56,11 @@ int main(int argc, char *argv[])
     window.setWindowFlags(Qt::FramelessWindowHint);
     if (fullscreen)
         window.setWindowState(Qt::WindowFullScreen);
+
+    // Embedding this at all (regardless of visibility) is what makes Qt
+    // Virtual Keyboard suppress its own automatic fullscreen-ish panel in
+    // favour of this smaller, movable one - see floating_keyboard.hpp.
+    FloatingKeyboard floating_keyboard(&window);
 
     window.show();
     splash.finish(&window);
