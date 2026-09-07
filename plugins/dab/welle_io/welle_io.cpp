@@ -135,6 +135,19 @@ void WelleIo::play(QString service_id)
     if (label.isEmpty())
         return;
 
+    // Re-pressing the tile that's already playing (or already being tuned
+    // to) must be a no-op, not a restart - the UI's tile is a plain
+    // QPushButton::setCheckable, which has no notion of "already selected,
+    // ignore this click" on its own, so every click (including an
+    // accidental double-press/touch-bounce on the same tile) reaches here.
+    // Without this guard, that unconditionally stopped and re-tuned the
+    // same station below - visible as the tile deselecting (now_playing()
+    // briefly empty during the stop/restart) even though nothing should
+    // have changed. Only a genuine stop() or a play() for a *different*
+    // station should ever interrupt what's currently selected.
+    if (service_id == this->playing_service_id || service_id == this->pending_service_id)
+        return;
+
     this->stop_player();
     this->playing_service_id.clear();
     this->is_scanning = false;
