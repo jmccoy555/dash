@@ -81,12 +81,24 @@ QPixmap local_track_art(QString path)
 // varies per tab (DAB's service tiles are wider/shorter than the poster-
 // shaped media_tile() ones), so this takes it as a parameter rather than
 // assuming one fixed size everywhere.
-int columns_for_width(QScrollArea *area, int tile_width)
+int columns_for_width(QScrollArea *area, int tile_width, int max_columns)
 {
+    // QGridLayout puts real spacing between columns (confirmed live -
+    // dividing raw available width by tile width alone overflowed the
+    // viewport, since it didn't account for that gap on every column after
+    // the first). Estimated rather than read off a real QGridLayout, since
+    // this runs before the grid it's sizing exists yet.
+    const int spacing = 8;
     int available = area->viewport()->width();
     if (available <= 0 || tile_width <= 0)
         return 1;
-    return std::max(1, available / tile_width);
+    int columns = (available + spacing) / (tile_width + spacing);
+    // Capped at max_columns (each tab's previous fixed count) even when
+    // more would technically fit - more, smaller-relative tiles packed
+    // into a row is worse to hit accurately while driving, not better
+    // (see conversation). Filling genuinely unused width matters less
+    // than that.
+    return std::max(1, std::min(columns, max_columns));
 }
 
 }
@@ -621,7 +633,7 @@ void DabPlayerTab::rebuild_services(QList<DabService> services)
         delete index_child;
     }
 
-    const int columns = columns_for_width(this->services_area, 340);
+    const int columns = columns_for_width(this->services_area, 340, 5);
     for (auto group = groups.constBegin(); group != groups.constEnd(); ++group) {
         QLabel *header = new QLabel(group.key(), this->services_container);
         header->setFont(this->arbiter.forge().font(20));
@@ -825,7 +837,7 @@ void LocalPlayerTab::populate(QString path)
     QWidget *grid_widget = new QWidget(this->browser_container);
     QGridLayout *grid = new QGridLayout(grid_widget);
     grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);
-    const int columns = columns_for_width(this->browser_area, 180 * this->arbiter.layout().scale);
+    const int columns = columns_for_width(this->browser_area, 180 * this->arbiter.layout().scale, 9);
     int i = 0;
 
     QDir dir(path);
@@ -967,7 +979,7 @@ void LocalPlayerTab::populate_search_results()
     QWidget *grid_widget = new QWidget(this->browser_container);
     QGridLayout *grid = new QGridLayout(grid_widget);
     grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);
-    const int columns = columns_for_width(this->browser_area, 180 * this->arbiter.layout().scale);
+    const int columns = columns_for_width(this->browser_area, 180 * this->arbiter.layout().scale, 9);
     int i = 0;
 
     QToolButton *clear = this->arbiter.forge().media_tile("✕ Clear search", QString());
@@ -1311,7 +1323,7 @@ void JellyfinTab::populate(QList<Jellyfin::Item> items)
         delete child;
     }
 
-    const int columns = columns_for_width(this->browser_area, 180 * this->arbiter.layout().scale);
+    const int columns = columns_for_width(this->browser_area, 180 * this->arbiter.layout().scale, 9);
 
     if (!this->nav_stack.isEmpty()) {
         QWidget *back_widget = new QWidget(this->browser_container);
@@ -1869,7 +1881,7 @@ void YouTubeTab::populate(QList<YouTube::Video> results)
     QWidget *grid_widget = new QWidget(this->results_container);
     QGridLayout *grid = new QGridLayout(grid_widget);
     grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);  // see the equivalent comment in JellyfinTab::populate()
-    const int columns = columns_for_width(this->results_area, 180 * this->arbiter.layout().scale);
+    const int columns = columns_for_width(this->results_area, 180 * this->arbiter.layout().scale, 9);
 
     for (int i = 0; i < results.size(); i++) {
         const YouTube::Video &video = results[i];
@@ -2111,7 +2123,7 @@ void RecentTab::populate()
     QWidget *grid_widget = new QWidget(this->container);
     QGridLayout *grid = new QGridLayout(grid_widget);
     grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);
-    const int columns = columns_for_width(this->area, 180 * this->arbiter.layout().scale);
+    const int columns = columns_for_width(this->area, 180 * this->arbiter.layout().scale, 9);
     int i = 0;
 
     const QList<RecentlyPlayed::Entry> &entries = this->arbiter.system().recently_played.entries();
