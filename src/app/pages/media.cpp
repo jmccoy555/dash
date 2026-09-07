@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <functional>
 
 #include <attachedpictureframe.h>
 #include <fileref.h>
@@ -81,6 +82,38 @@ QPixmap local_track_art(QString path)
 // varies per tab (DAB's service tiles are wider/shorter than the poster-
 // shaped media_tile() ones), so this takes it as a parameter rather than
 // assuming one fixed size everywhere.
+// Re-invokes callback whenever watched's real size actually changes -
+// used to rebuild a media tab's grid once the window manager's async
+// fullscreen negotiation actually lands. A tab's very first populate()
+// call runs during the whole app's construction, before the main window
+// has even been shown, so columns_for_width() sees whatever placeholder
+// geometry Qt has at that point; deferring that first call by one event
+// loop turn (QTimer::singleShot(0, ...), still worth keeping for the
+// common case) isn't always enough on its own - kwin_x11 can still be
+// mid-transition to fullscreen by then (confirmed live: still 1 column
+// after that deferral). This reacts to whatever real geometry eventually
+// arrives, however long that takes, rather than guessing a delay.
+class ResizeWatcher : public QObject {
+   public:
+    ResizeWatcher(QWidget *watched, std::function<void()> callback, QObject *parent)
+        : QObject(parent)
+        , callback(callback)
+    {
+        watched->installEventFilter(this);
+    }
+
+   protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (event->type() == QEvent::Resize)
+            this->callback();
+        return QObject::eventFilter(watched, event);
+    }
+
+   private:
+    std::function<void()> callback;
+};
+
 int columns_for_width(QScrollArea *area, int tile_width, int max_columns)
 {
     // QGridLayout puts real spacing between columns (confirmed live -
@@ -777,7 +810,11 @@ LocalPlayerTab::LocalPlayerTab(Arbiter &arbiter, QWidget *parent)
     // permanently bake in 1 column (confirmed live). Letting the event
     // loop turn over once first means the window's actually been shown and
     // laid out by the time this runs.
-    QTimer::singleShot(0, this, [this] { this->navigate(this->config->get_media_home()); });
+    QTimer::singleShot(0, this, [this] { this->navigate(this->current_path.isEmpty() ? this->config->get_media_home() : this->current_path); });
+    // Backstop for the above - see ResizeWatcher's own comment.
+    new ResizeWatcher(this->browser_area->viewport(), [this] {
+        this->navigate(this->current_path.isEmpty() ? this->config->get_media_home() : this->current_path);
+    }, this);
 }
 
 QWidget *LocalPlayerTab::header_widget()
@@ -1283,6 +1320,10 @@ JellyfinTab::JellyfinTab(Arbiter &arbiter, QWidget *parent)
         this->arbiter.system().jellyfin.browse(QString());
     else
         this->status_label->setText("Not logged in - see settings");
+
+    // See ResizeWatcher's own comment - covers a browse() response (e.g.
+    // already cached) landing before the window's real geometry does.
+    new ResizeWatcher(this->browser_area->viewport(), [this] { this->populate(this->current_items); }, this);
 }
 
 void JellyfinTab::navigate(QString parentId, QString label, bool push)
@@ -1846,6 +1887,9 @@ YouTubeTab::YouTubeTab(Arbiter &arbiter, QWidget *parent)
     layout->addWidget(this->content_stack, 1);
     layout->addWidget(this->seek_widget());
     layout->addWidget(this->controls_widget());
+
+    // See ResizeWatcher's own comment.
+    new ResizeWatcher(this->results_area->viewport(), [this] { this->populate(this->current_results); }, this);
 }
 
 void YouTubeTab::search()
@@ -2109,6 +2153,8 @@ RecentTab::RecentTab(Arbiter &arbiter, QTabWidget *media_page, LocalPlayerTab *l
     // Deferred for the same reason as LocalPlayerTab's initial navigate()
     // call - see its comment.
     QTimer::singleShot(0, this, [this] { this->populate(); });
+    // Backstop for the above - see ResizeWatcher's own comment.
+    new ResizeWatcher(this->area->viewport(), [this] { this->populate(); }, this);
 }
 
 void RecentTab::populate()
