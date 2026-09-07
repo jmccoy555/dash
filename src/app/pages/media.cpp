@@ -1076,14 +1076,24 @@ QWidget *LocalPlayerTab::controls_widget()
             playlist->setPlaybackMode(QMediaPlaylist::Sequential);
     };
 
+    // The app-wide stylesheet's checked-highlight rule is QPushButton:
+    // !flat:checked - deliberately excludes flat buttons, so a flat
+    // checkable button like this one never visually shows its checked
+    // state on its own (confirmed live). Scoped override rather than
+    // touching that global rule, since this is the first icon-only flat
+    // toggle that actually needs a colour change rather than an icon swap
+    // (compare home_button/play_button, which swap between two different
+    // icons instead).
     shuffle_button->setFlat(true);
     shuffle_button->setCheckable(true);
+    shuffle_button->setStyleSheet("QPushButton:checked { background-color: palette(base); border-radius: 8px; }");
     this->arbiter.forge().iconize("shuffle", shuffle_button, 32);
     connect(shuffle_button, &QPushButton::clicked, apply_mode);
     layout->addWidget(shuffle_button);
 
     repeat_button->setFlat(true);
     repeat_button->setCheckable(true);
+    repeat_button->setStyleSheet("QPushButton:checked { background-color: palette(base); border-radius: 8px; }");
     // Defaults to Repeat All, not Off - matches this playlist's previous
     // hardcoded always-Loop behaviour, so adding these buttons doesn't
     // silently change what a queue does before anyone touches them.
@@ -1664,14 +1674,24 @@ QWidget *JellyfinTab::controls_widget()
             playlist->setPlaybackMode(QMediaPlaylist::Sequential);
     };
 
+    // The app-wide stylesheet's checked-highlight rule is QPushButton:
+    // !flat:checked - deliberately excludes flat buttons, so a flat
+    // checkable button like this one never visually shows its checked
+    // state on its own (confirmed live). Scoped override rather than
+    // touching that global rule, since this is the first icon-only flat
+    // toggle that actually needs a colour change rather than an icon swap
+    // (compare home_button/play_button, which swap between two different
+    // icons instead).
     shuffle_button->setFlat(true);
     shuffle_button->setCheckable(true);
+    shuffle_button->setStyleSheet("QPushButton:checked { background-color: palette(base); border-radius: 8px; }");
     this->arbiter.forge().iconize("shuffle", shuffle_button, 32);
     connect(shuffle_button, &QPushButton::clicked, apply_mode);
     layout->addWidget(shuffle_button);
 
     repeat_button->setFlat(true);
     repeat_button->setCheckable(true);
+    repeat_button->setStyleSheet("QPushButton:checked { background-color: palette(base); border-radius: 8px; }");
     // Defaults to Repeat All - matches this playlist's previous hardcoded
     // always-Loop behaviour.
     repeat_button->setProperty("repeat_state", 1);
