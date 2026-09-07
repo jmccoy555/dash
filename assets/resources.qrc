@@ -37,6 +37,9 @@
         <file>icons/playlist_add.svg</file>
         <file>icons/favorite.svg</file>
         <file>icons/favorite_border.svg</file>
+        <file>icons/shuffle.svg</file>
+        <file>icons/repeat.svg</file>
+        <file>icons/repeat_one.svg</file>
         <file>icons/fullscreen.svg</file>
         <file>icons/fullscreen_exit.svg</file>
         <file>icons/search.svg</file>

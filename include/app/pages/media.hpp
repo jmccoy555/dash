@@ -166,7 +166,7 @@ class LocalPlayerTab : public QWidget {
     void populate(QString path);
     void search();
     void populate_search_results();
-    QToolButton *build_track_tile(QString track_path, QStringList siblings, int index);
+    QToolButton *build_track_tile(QString track_path, QString title, QStringList siblings, int index);
 
     Config *config;
     QMediaPlayer *player;
@@ -199,6 +199,7 @@ class JellyfinTab : public QWidget {
     QStackedWidget *content_stack;  // swaps between browser_area (tile grid) and video_widget (Movie/Episode playback)
     QScrollArea *browser_area;
     QWidget *browser_container;  // the actual grid - rebuilt (cleared + repopulated) on every navigate()/populate()
+    QWidget *letter_index;  // A-Z jump strip alongside browser_area - see DabPlayerTab's own for the pattern this mirrors
     QGraphicsScene *video_scene;
     QGraphicsVideoItem *video_item;
     DashcamVideoView *video_widget;

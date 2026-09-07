@@ -18,6 +18,7 @@
 #include <QListWidgetItem>
 #include <QMediaPlaylist>
 #include <QMouseEvent>
+#include <QPair>
 #include <QStyle>
 
 #include "app/window.hpp"
@@ -70,6 +71,22 @@ QPixmap local_track_art(QString path)
     QPixmap pixmap;
     pixmap.loadFromData(reinterpret_cast<const uchar *>(data.data()), data.size());
     return pixmap;
+}
+
+// How many tile_width-wide columns actually fit across area's current
+// viewport - every media tab's grid used a flat hardcoded column count
+// before this, which either left a gap down the right side on a wide
+// screen or forced tiles into a horizontal scroll on a narrow one (see
+// conversation - "stretch the columns to fit to full width"). Tile width
+// varies per tab (DAB's service tiles are wider/shorter than the poster-
+// shaped media_tile() ones), so this takes it as a parameter rather than
+// assuming one fixed size everywhere.
+int columns_for_width(QScrollArea *area, int tile_width)
+{
+    int available = area->viewport()->width();
+    if (available <= 0 || tile_width <= 0)
+        return 1;
+    return std::max(1, available / tile_width);
 }
 
 }
@@ -604,7 +621,7 @@ void DabPlayerTab::rebuild_services(QList<DabService> services)
         delete index_child;
     }
 
-    const int columns = 5;
+    const int columns = columns_for_width(this->services_area, 340);
     for (auto group = groups.constBegin(); group != groups.constEnd(); ++group) {
         QLabel *header = new QLabel(group.key(), this->services_container);
         header->setFont(this->arbiter.forge().font(20));
@@ -713,7 +730,8 @@ LocalPlayerTab::LocalPlayerTab(Arbiter &arbiter, QWidget *parent)
     , search_input(nullptr)
 {
     QMediaPlaylist *playlist = new QMediaPlaylist(this);
-    playlist->setPlaybackMode(QMediaPlaylist::Loop);
+    // Playback mode is set for real by controls_widget()'s shuffle/repeat
+    // buttons (defaulting to Repeat All, same as this used to hardcode).
     this->player->setPlaylist(playlist);
 
     // Registers with AAHandler so AA starting playback can pause this (and
@@ -801,7 +819,7 @@ void LocalPlayerTab::populate(QString path)
     QWidget *grid_widget = new QWidget(this->browser_container);
     QGridLayout *grid = new QGridLayout(grid_widget);
     grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);
-    const int columns = 9;
+    const int columns = columns_for_width(this->browser_area, 180 * this->arbiter.layout().scale);
     int i = 0;
 
     QDir dir(path);
@@ -816,8 +834,17 @@ void LocalPlayerTab::populate(QString path)
         i++;
     }
 
+    // The Jellyfin sync destination is deliberately never shown as a
+    // browsable subfolder itself - its audio gets folded straight into the
+    // library root's own track listing below instead (see conversation -
+    // synced tracks should show up "as local", not live behind a folder no
+    // one taps into).
+    QString jellyfin_dir = QDir(this->config->get_jellyfin_offline_dir()).absolutePath();
+
     QFileInfoList dirs = dir.entryInfoList(QDir::AllDirs | QDir::NoDotAndDotDot | QDir::Readable, QDir::Name | QDir::IgnoreCase);
     for (const QFileInfo &info : dirs) {
+        if (info.absoluteFilePath() == jellyfin_dir)
+            continue;
         QToolButton *tile = this->arbiter.forge().media_tile(info.fileName(), QString());
         QString subpath = info.absoluteFilePath();
         connect(tile, &QToolButton::clicked, [this, subpath] { this->navigate(subpath); });
@@ -826,12 +853,26 @@ void LocalPlayerTab::populate(QString path)
     }
 
     QStringList track_names = dir.entryList(QStringList() << "*.flac" << "*.m4a" << "*.mp3", QDir::Files | QDir::Readable, QDir::Name | QDir::IgnoreCase);
-    QStringList track_paths;
+    QList<QPair<QString, QString>> tracks;  // (path, display title)
     for (const QString &name : track_names)
-        track_paths.append(dir.absoluteFilePath(name));
+        tracks.append({dir.absoluteFilePath(name), QFileInfo(name).completeBaseName()});
 
-    for (int t = 0; t < track_paths.size(); t++) {
-        QToolButton *tile = this->build_track_tile(track_paths[t], track_paths, t);
+    // Only at the library root - showing a synced track again inside every
+    // subfolder it doesn't actually belong to would be more confusing than
+    // helpful.
+    if (QDir(path).absolutePath() == QDir(this->config->get_media_home()).absolutePath())
+        tracks.append(this->arbiter.system().jellyfin.offline_audio_tracks());
+
+    std::sort(tracks.begin(), tracks.end(), [](const QPair<QString, QString> &a, const QPair<QString, QString> &b) {
+        return QString::compare(a.second, b.second, Qt::CaseInsensitive) < 0;
+    });
+
+    QStringList track_paths;
+    for (const auto &track : tracks)
+        track_paths.append(track.first);
+
+    for (int t = 0; t < tracks.size(); t++) {
+        QToolButton *tile = this->build_track_tile(tracks[t].first, tracks[t].second, track_paths, t);
         grid->addWidget(tile, i / columns, i % columns);
         i++;
     }
@@ -840,10 +881,8 @@ void LocalPlayerTab::populate(QString path)
     static_cast<QVBoxLayout *>(container_layout)->addStretch();
 }
 
-QToolButton *LocalPlayerTab::build_track_tile(QString track_path, QStringList siblings, int index)
+QToolButton *LocalPlayerTab::build_track_tile(QString track_path, QString title, QStringList siblings, int index)
 {
-    QString title = QFileInfo(track_path).completeBaseName();
-
     QToolButton *tile = this->arbiter.forge().media_tile(title, QString(), local_track_art(track_path));
     tile->setCheckable(true);
     tile->setChecked(this->player->playlist()->currentMedia().canonicalUrl().toLocalFile() == track_path);
@@ -894,20 +933,35 @@ void LocalPlayerTab::populate_search_results()
     // which folder browsing was left in - matches how DashTube/Jellyfin's
     // search works (the whole library, not just whatever's currently in
     // view), and is a lot more useful than a folder-scoped search would be.
-    QStringList track_paths;
+    // Synced Jellyfin tracks are searched by their real name the same way
+    // populate() lists them, not by their id-named file.
+    QList<QPair<QString, QString>> tracks;  // (path, display title)
     QDirIterator it(this->config->get_media_home(), QStringList() << "*.flac" << "*.m4a" << "*.mp3",
                      QDir::Files | QDir::Readable, QDirIterator::Subdirectories);
-    while (it.hasNext() && track_paths.size() < 300) {
+    while (it.hasNext() && tracks.size() < 300) {
         QString path = it.next();
-        if (QFileInfo(path).completeBaseName().contains(this->search_query, Qt::CaseInsensitive))
-            track_paths.append(path);
+        QString title = QFileInfo(path).completeBaseName();
+        if (title.contains(this->search_query, Qt::CaseInsensitive))
+            tracks.append({path, title});
     }
-    track_paths.sort(Qt::CaseInsensitive);
+    for (const auto &track : this->arbiter.system().jellyfin.offline_audio_tracks()) {
+        if (tracks.size() >= 300)
+            break;
+        if (track.second.contains(this->search_query, Qt::CaseInsensitive))
+            tracks.append(track);
+    }
+    std::sort(tracks.begin(), tracks.end(), [](const QPair<QString, QString> &a, const QPair<QString, QString> &b) {
+        return QString::compare(a.second, b.second, Qt::CaseInsensitive) < 0;
+    });
+
+    QStringList track_paths;
+    for (const auto &track : tracks)
+        track_paths.append(track.first);
 
     QWidget *grid_widget = new QWidget(this->browser_container);
     QGridLayout *grid = new QGridLayout(grid_widget);
     grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);
-    const int columns = 9;
+    const int columns = columns_for_width(this->browser_area, 180 * this->arbiter.layout().scale);
     int i = 0;
 
     QToolButton *clear = this->arbiter.forge().media_tile("✕ Clear search", QString());
@@ -920,8 +974,8 @@ void LocalPlayerTab::populate_search_results()
     grid->addWidget(clear, 0, 0);
     i++;
 
-    for (int t = 0; t < track_paths.size(); t++) {
-        QToolButton *tile = this->build_track_tile(track_paths[t], track_paths, t);
+    for (int t = 0; t < tracks.size(); t++) {
+        QToolButton *tile = this->build_track_tile(tracks[t].first, tracks[t].second, track_paths, t);
         grid->addWidget(tile, i / columns, i % columns);
         i++;
     }
@@ -993,6 +1047,52 @@ QWidget *LocalPlayerTab::controls_widget()
     QWidget *widget = new QWidget(this);
     QHBoxLayout *layout = new QHBoxLayout(widget);
 
+    // QMediaPlaylist::PlaybackMode is one exclusive enum value, not two
+    // independent flags, so shuffle+repeat's 2x3 combinations get resolved
+    // down to it here rather than each button owning a mode of its own.
+    // Repeat-One always wins over shuffle while it's active (matching every
+    // other player's convention - shuffling a single repeated track makes
+    // no sense); the repeat button's own tri-state (off/all/one) is tracked
+    // via a plain dynamic property since setCheckable only ever gives a
+    // button two icon states, not three.
+    auto playlist = this->player->playlist();
+    QPushButton *shuffle_button = new QPushButton(widget);
+    QPushButton *repeat_button = new QPushButton(widget);
+    auto apply_mode = [playlist, shuffle_button, repeat_button, this] {
+        int repeat_state = repeat_button->property("repeat_state").toInt();
+        if (repeat_state == 2)
+            playlist->setPlaybackMode(QMediaPlaylist::CurrentItemInLoop);
+        else if (shuffle_button->isChecked())
+            playlist->setPlaybackMode(QMediaPlaylist::Random);
+        else if (repeat_state == 1)
+            playlist->setPlaybackMode(QMediaPlaylist::Loop);
+        else
+            playlist->setPlaybackMode(QMediaPlaylist::Sequential);
+    };
+
+    shuffle_button->setFlat(true);
+    shuffle_button->setCheckable(true);
+    this->arbiter.forge().iconize("shuffle", shuffle_button, 32);
+    connect(shuffle_button, &QPushButton::clicked, apply_mode);
+    layout->addWidget(shuffle_button);
+
+    repeat_button->setFlat(true);
+    repeat_button->setCheckable(true);
+    // Defaults to Repeat All, not Off - matches this playlist's previous
+    // hardcoded always-Loop behaviour, so adding these buttons doesn't
+    // silently change what a queue does before anyone touches them.
+    repeat_button->setProperty("repeat_state", 1);
+    repeat_button->setChecked(true);
+    this->arbiter.forge().iconize("repeat", repeat_button, 32);
+    connect(repeat_button, &QPushButton::clicked, [repeat_button, apply_mode, this] {
+        int next_state = (repeat_button->property("repeat_state").toInt() + 1) % 3;
+        repeat_button->setProperty("repeat_state", next_state);
+        repeat_button->setChecked(next_state != 0);
+        this->arbiter.forge().iconize(next_state == 2 ? "repeat_one" : "repeat", repeat_button, 32);
+        apply_mode();
+    });
+    apply_mode();
+
     QPushButton *previous_button = new QPushButton(widget);
     previous_button->setFlat(true);
     this->arbiter.forge().iconize("skip_previous", previous_button, 56);
@@ -1037,6 +1137,7 @@ QWidget *LocalPlayerTab::controls_widget()
         player->play();
     });
     layout->addWidget(forward_button);
+    layout->addWidget(repeat_button);
 
     return widget;
 }
@@ -1057,6 +1158,7 @@ JellyfinTab::JellyfinTab(Arbiter &arbiter, QWidget *parent)
     , content_stack(new QStackedWidget(this))
     , browser_area(new QScrollArea(this))
     , browser_container(new QWidget(this->browser_area))
+    , letter_index(new QWidget(this))
     , video_scene(new QGraphicsScene(this))
     , video_item(new QGraphicsVideoItem())
     , video_widget(new DashcamVideoView(this->video_scene, this->video_item, this))
@@ -1074,6 +1176,18 @@ JellyfinTab::JellyfinTab(Arbiter &arbiter, QWidget *parent)
     this->browser_area->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     this->browser_area->setFrameShape(QFrame::NoFrame);
     Session::Forge::to_touch_scroller(this->browser_area);
+
+    // A-Z jump strip, same pattern as DabPlayerTab's - built alongside
+    // populate() below since only letters actually present get a button.
+    new QVBoxLayout(this->letter_index);
+    this->letter_index->layout()->setContentsMargins(0, 0, 0, 0);
+    this->letter_index->setFixedWidth(50);
+
+    QWidget *browse_row = new QWidget(this);
+    QHBoxLayout *browse_row_layout = new QHBoxLayout(browse_row);
+    browse_row_layout->setContentsMargins(0, 0, 0, 0);
+    browse_row_layout->addWidget(this->browser_area, 1);
+    browse_row_layout->addWidget(this->letter_index);
 
     this->video_scene->setBackgroundBrush(Qt::black);
     this->video_scene->addItem(this->video_item);
@@ -1095,12 +1209,13 @@ JellyfinTab::JellyfinTab(Arbiter &arbiter, QWidget *parent)
             this->video_widget->fitInView(this->video_item, Qt::KeepAspectRatioByExpanding);
     });
 
-    this->content_stack->addWidget(this->browser_area);
+    this->content_stack->addWidget(browse_row);
     this->content_stack->addWidget(this->video_widget);
     this->arbiter.system().rear_display.register_view("Jellyfin", this->rear_video_widget);
 
     QMediaPlaylist *playlist = new QMediaPlaylist(this->player);
-    playlist->setPlaybackMode(QMediaPlaylist::Loop);
+    // Playback mode is set for real by controls_widget()'s shuffle/repeat
+    // buttons (defaulting to Repeat All, same as this used to hardcode).
     this->player->setPlaylist(playlist);
 
     connect(&this->arbiter.system().jellyfin, &Jellyfin::items_ready, this, [this](QString parentId, QList<Jellyfin::Item> items) {
@@ -1165,6 +1280,12 @@ void JellyfinTab::navigate(QString parentId, QString label, bool push)
 
 void JellyfinTab::populate(QList<Jellyfin::Item> items)
 {
+    // Sorted once, up front - both what current_items/play_from() index
+    // against and what the letter grouping below walks, so a tile's index
+    // always means the same item in both places.
+    std::sort(items.begin(), items.end(), [](const Jellyfin::Item &a, const Jellyfin::Item &b) {
+        return QString::compare(a.name, b.name, Qt::CaseInsensitive) < 0;
+    });
     this->current_items = items;
 
     QLayout *container_layout = this->browser_container->layout();
@@ -1174,57 +1295,90 @@ void JellyfinTab::populate(QList<Jellyfin::Item> items)
         delete child;
     }
 
-    QWidget *grid_widget = new QWidget(this->browser_container);
-    QGridLayout *grid = new QGridLayout(grid_widget);
-    grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);  // media_tile()'s poster-shaped tiles are narrower than the content area can fill edge-to-edge - pack left rather than stretching big gaps between columns
-    const int columns = 9;
-    int i = 0;
+    const int columns = columns_for_width(this->browser_area, 180 * this->arbiter.layout().scale);
 
     if (!this->nav_stack.isEmpty()) {
+        QWidget *back_widget = new QWidget(this->browser_container);
+        QGridLayout *back_grid = new QGridLayout(back_widget);
         QToolButton *up = this->arbiter.forge().media_tile("↲ Back", QString());
         connect(up, &QToolButton::clicked, [this] { this->navigate(QString(), QString(), false); });
-        grid->addWidget(up, 0, 0);
-        i++;
+        back_grid->addWidget(up, 0, 0);
+        container_layout->addWidget(back_widget);
     }
 
+    // A-Z jump strip, same pattern as DabPlayerTab's own - only letters
+    // actually present get a button, rebuilt alongside the grid itself
+    // since which letters exist changes with whatever's currently browsed.
+    QLayout *index_layout = this->letter_index->layout();
+    QLayoutItem *index_child;
+    while ((index_child = index_layout->takeAt(0)) != nullptr) {
+        delete index_child->widget();
+        delete index_child;
+    }
+
+    QMap<QString, QList<int>> groups;  // first letter -> indices into items/current_items
     for (int index = 0; index < items.size(); index++) {
-        const Jellyfin::Item &item = items[index];
-
-        QToolButton *tile = this->arbiter.forge().media_tile(item.name, this->arbiter.system().jellyfin.image_url(item.id).toString());
-
-        if (item.type == Jellyfin::ItemType::Container) {
-            connect(tile, &QToolButton::clicked, [this, item] { this->navigate(item.id, item.name, true); });
-            grid->addWidget(tile, i / columns, i % columns);
-        } else {
-            connect(tile, &QToolButton::clicked, [this, index] { this->play_from(index); });
-
-            // The star overlays the tile's own top-right corner rather than
-            // sitting in a separate row - QGridLayout allows two widgets in
-            // the same cell as long as their alignment flags don't both
-            // claim the same space, which is exactly what a small corner
-            // badge over a big tile needs.
-            QWidget *cell = new QWidget(grid_widget);
-            QGridLayout *cell_layout = new QGridLayout(cell);
-            cell_layout->setContentsMargins(0, 0, 0, 0);
-            cell_layout->addWidget(tile, 0, 0);
-
-            QPushButton *star = new QPushButton(cell);
-            star->setFlat(true);
-            star->setCheckable(true);
-            star->setChecked(item.isFavorite);
-            this->arbiter.forge().iconize("favorite_border", "favorite", star, 20);
-            QString item_id = item.id;
-            connect(star, &QPushButton::clicked, [this, item_id](bool checked) {
-                this->arbiter.system().jellyfin.toggle_favorite(item_id, checked);
-            });
-            cell_layout->addWidget(star, 0, 0, Qt::AlignTop | Qt::AlignRight);
-
-            grid->addWidget(cell, i / columns, i % columns);
-        }
-        i++;
+        QString letter = "#";
+        if (!items[index].name.isEmpty() && items[index].name.at(0).isLetter())
+            letter = items[index].name.at(0).toUpper();
+        groups[letter].append(index);
     }
 
-    container_layout->addWidget(grid_widget);
+    for (auto group = groups.constBegin(); group != groups.constEnd(); ++group) {
+        QLabel *header = new QLabel(group.key(), this->browser_container);
+        header->setFont(this->arbiter.forge().font(20));
+        container_layout->addWidget(header);
+
+        QWidget *grid_widget = new QWidget(this->browser_container);
+        QGridLayout *grid = new QGridLayout(grid_widget);
+        grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);  // media_tile()'s poster-shaped tiles are narrower than the content area can fill edge-to-edge - pack left rather than stretching big gaps between columns
+        int i = 0;
+        for (int index : group.value()) {
+            const Jellyfin::Item &item = items[index];
+
+            QToolButton *tile = this->arbiter.forge().media_tile(item.name, this->arbiter.system().jellyfin.image_url(item.id).toString());
+
+            if (item.type == Jellyfin::ItemType::Container) {
+                connect(tile, &QToolButton::clicked, [this, item] { this->navigate(item.id, item.name, true); });
+                grid->addWidget(tile, i / columns, i % columns);
+            } else {
+                connect(tile, &QToolButton::clicked, [this, index] { this->play_from(index); });
+
+                // The star overlays the tile's own top-right corner rather than
+                // sitting in a separate row - QGridLayout allows two widgets in
+                // the same cell as long as their alignment flags don't both
+                // claim the same space, which is exactly what a small corner
+                // badge over a big tile needs.
+                QWidget *cell = new QWidget(grid_widget);
+                QGridLayout *cell_layout = new QGridLayout(cell);
+                cell_layout->setContentsMargins(0, 0, 0, 0);
+                cell_layout->addWidget(tile, 0, 0);
+
+                QPushButton *star = new QPushButton(cell);
+                star->setFlat(true);
+                star->setCheckable(true);
+                star->setChecked(item.isFavorite);
+                this->arbiter.forge().iconize("favorite_border", "favorite", star, 20);
+                QString item_id = item.id;
+                connect(star, &QPushButton::clicked, [this, item_id](bool checked) {
+                    this->arbiter.system().jellyfin.toggle_favorite(item_id, checked);
+                });
+                cell_layout->addWidget(star, 0, 0, Qt::AlignTop | Qt::AlignRight);
+
+                grid->addWidget(cell, i / columns, i % columns);
+            }
+            i++;
+        }
+        container_layout->addWidget(grid_widget);
+
+        QPushButton *jump = new QPushButton(group.key(), this->letter_index);
+        jump->setFlat(true);
+        jump->setFixedHeight(36);
+        connect(jump, &QPushButton::clicked, [this, header] { this->browser_area->ensureWidgetVisible(header, 0, 0); });
+        index_layout->addWidget(jump);
+    }
+    static_cast<QVBoxLayout *>(index_layout)->addStretch();
+
     static_cast<QVBoxLayout *>(container_layout)->addStretch();
 }
 
@@ -1487,6 +1641,45 @@ QWidget *JellyfinTab::controls_widget()
     QWidget *widget = new QWidget(this);
     QHBoxLayout *layout = new QHBoxLayout(widget);
 
+    // See LocalPlayerTab::controls_widget() for why this resolves down to
+    // one PlaybackMode enum instead of two independent flags.
+    auto playlist = this->player->playlist();
+    QPushButton *shuffle_button = new QPushButton(widget);
+    QPushButton *repeat_button = new QPushButton(widget);
+    auto apply_mode = [playlist, shuffle_button, repeat_button] {
+        int repeat_state = repeat_button->property("repeat_state").toInt();
+        if (repeat_state == 2)
+            playlist->setPlaybackMode(QMediaPlaylist::CurrentItemInLoop);
+        else if (shuffle_button->isChecked())
+            playlist->setPlaybackMode(QMediaPlaylist::Random);
+        else if (repeat_state == 1)
+            playlist->setPlaybackMode(QMediaPlaylist::Loop);
+        else
+            playlist->setPlaybackMode(QMediaPlaylist::Sequential);
+    };
+
+    shuffle_button->setFlat(true);
+    shuffle_button->setCheckable(true);
+    this->arbiter.forge().iconize("shuffle", shuffle_button, 32);
+    connect(shuffle_button, &QPushButton::clicked, apply_mode);
+    layout->addWidget(shuffle_button);
+
+    repeat_button->setFlat(true);
+    repeat_button->setCheckable(true);
+    // Defaults to Repeat All - matches this playlist's previous hardcoded
+    // always-Loop behaviour.
+    repeat_button->setProperty("repeat_state", 1);
+    repeat_button->setChecked(true);
+    this->arbiter.forge().iconize("repeat", repeat_button, 32);
+    connect(repeat_button, &QPushButton::clicked, [repeat_button, apply_mode, this] {
+        int next_state = (repeat_button->property("repeat_state").toInt() + 1) % 3;
+        repeat_button->setProperty("repeat_state", next_state);
+        repeat_button->setChecked(next_state != 0);
+        this->arbiter.forge().iconize(next_state == 2 ? "repeat_one" : "repeat", repeat_button, 32);
+        apply_mode();
+    });
+    apply_mode();
+
     QPushButton *previous_button = new QPushButton(widget);
     previous_button->setFlat(true);
     this->arbiter.forge().iconize("skip_previous", previous_button, 56);
@@ -1522,6 +1715,7 @@ QWidget *JellyfinTab::controls_widget()
         player->play();
     });
     layout->addWidget(forward_button);
+    layout->addWidget(repeat_button);
 
     return widget;
 }
@@ -1649,7 +1843,7 @@ void YouTubeTab::populate(QList<YouTube::Video> results)
     QWidget *grid_widget = new QWidget(this->results_container);
     QGridLayout *grid = new QGridLayout(grid_widget);
     grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);  // see the equivalent comment in JellyfinTab::populate()
-    const int columns = 9;
+    const int columns = columns_for_width(this->results_area, 180 * this->arbiter.layout().scale);
 
     for (int i = 0; i < results.size(); i++) {
         const YouTube::Video &video = results[i];
@@ -1889,7 +2083,7 @@ void RecentTab::populate()
     QWidget *grid_widget = new QWidget(this->container);
     QGridLayout *grid = new QGridLayout(grid_widget);
     grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);
-    const int columns = 9;
+    const int columns = columns_for_width(this->area, 180 * this->arbiter.layout().scale);
     int i = 0;
 
     const QList<RecentlyPlayed::Entry> &entries = this->arbiter.system().recently_played.entries();
