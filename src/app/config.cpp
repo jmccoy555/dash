@@ -23,6 +23,7 @@ Config::Config()
     this->youtube_cache_dir = this->settings.value("Pages/Media/YouTube/cache_dir", QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + "/youtube").toString();
     this->gps_host = this->settings.value("AndroidAuto/Gps/host", QString()).toString();
     this->gps_port = this->settings.value("AndroidAuto/Gps/port", 2947).toInt();
+    this->gps_enabled = this->settings.value("AndroidAuto/Gps/enabled", true).toBool();
     this->disabled_media_tabs = this->settings.value("Pages/Media/disabled_tabs", QStringList()).toStringList();
     this->si_units = this->settings.value("Pages/Vehicle/si_units", false).toBool();
     // 0 - SocketCAN

@@ -295,6 +295,20 @@ QWidget *MainSettingsTab::gps_row_widget()
 
     Config *config = Config::get_instance();
 
+    // Separate from clearing host/port - an explicit off switch, e.g. to
+    // rule the LOCATION sensor out while debugging without losing the
+    // saved host. Same Switch widget as Dark Mode/etc. use elsewhere on
+    // this page, not an icon button - a plain on/off setting reads as a
+    // toggle, not an action to press (see conversation).
+    Switch *enabled_toggle = new Switch(widget);
+    enabled_toggle->scale(this->arbiter.layout().scale);
+    enabled_toggle->setChecked(config->get_gps_enabled());
+    connect(enabled_toggle, &Switch::stateChanged, [this](bool state) {
+        Config::get_instance()->set_gps_enabled(state);
+        this->arbiter.system().gps.set_enabled(state);
+    });
+    layout->addWidget(enabled_toggle);
+
     QLineEdit *host_input = new QLineEdit(config->get_gps_host(), widget);
     host_input->setContextMenuPolicy(Qt::NoContextMenu);
     host_input->setAlignment(Qt::AlignCenter);

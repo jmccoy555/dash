@@ -28,6 +28,9 @@ class Gps : public QObject {
     // whenever the Settings page's fields are edited.
     void configure(QString host, int port);
 
+    // Separate off switch from host/port - see Config::get_gps_enabled().
+    void set_enabled(bool enabled);
+
     QString status() const { return this->status_; }
 
    private:
@@ -38,6 +41,7 @@ class Gps : public QObject {
     QTcpSocket *socket;
     QString host;
     int port = 0;
+    bool enabled = true;
     QByteArray buffer;
     QString status_;  // human-readable, for a status label in Settings - "Not configured" / "Connecting…" / "Fix: 51.50740, -0.12780"
 

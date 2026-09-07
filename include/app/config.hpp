@@ -126,6 +126,16 @@ class Config : public QObject {
         this->settings.setValue("AndroidAuto/Gps/port", this->gps_port);
     }
 
+    // Separate from host/port being set - lets this be turned off without
+    // losing/retyping the host, and gives GPS an explicit off switch for
+    // when the LOCATION sensor's misbehaving and needs ruling out.
+    inline bool get_gps_enabled() { return this->gps_enabled; }
+    inline void set_gps_enabled(bool gps_enabled)
+    {
+        this->gps_enabled = gps_enabled;
+        this->settings.setValue("AndroidAuto/Gps/enabled", this->gps_enabled);
+    }
+
     // Which of the Media page's own tabs (by their tab label - "Radio",
     // "DAB", "Bluetooth", "Local", "Jellyfin", "YouTube", "Dashcam") are
     // hidden. Absent from this list = shown, so a fresh install with no
@@ -277,6 +287,7 @@ class Config : public QObject {
     QString youtube_cache_dir;
     QString gps_host;
     int gps_port;
+    bool gps_enabled;
     QStringList disabled_media_tabs;
     bool si_units;
     ICANBus::VehicleBusType vehicle_can_bus;

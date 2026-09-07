@@ -47,6 +47,7 @@ Gps::Gps(Arbiter &arbiter)
         QTimer::singleShot(5000, this, [this] { this->connect_socket(); });
     });
 
+    this->enabled = Config::get_instance()->get_gps_enabled();
     this->configure(Config::get_instance()->get_gps_host(), Config::get_instance()->get_gps_port());
 }
 
@@ -59,8 +60,22 @@ void Gps::configure(QString host, int port)
     this->connect_socket();
 }
 
+void Gps::set_enabled(bool enabled)
+{
+    this->enabled = enabled;
+    this->socket->abort();
+    this->buffer.clear();
+    this->connect_socket();
+}
+
 void Gps::connect_socket()
 {
+    if (!this->enabled) {
+        this->status_ = "Disabled";
+        emit this->status_changed(this->status_);
+        return;
+    }
+
     if (this->host.isEmpty() || this->port <= 0) {
         this->status_ = "Not configured";
         emit this->status_changed(this->status_);
