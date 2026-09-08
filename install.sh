@@ -1,8 +1,8 @@
 #!/bin/bash
 
 #repo addresses
-aasdkRepo="https://github.com/OpenDsh/aasdk"
-gstreamerRepo="https://github.com/GStreamer/qt-gstreamer"
+aasdkRepo="https://github.com/jmccoy555/aasdk"
+gstreamerRepo="https://github.com/jmccoy555/qt-gstreamer"
 openautoRepo="https://github.com/jmccoy555/openauto"
 h264bitstreamRepo="https://github.com/aizvorski/h264bitstream"
 pulseaudioRepo="https://gitlab.freedesktop.org/pulseaudio/pulseaudio.git"
@@ -324,10 +324,6 @@ else
   echo -e moving to aasdk '\n'
   cd aasdk
 
-  #apply set_FIPS_mode patch
-  echo Apply set_FIPS_mode patch
-  git apply $script_path/patches/aasdk_openssl-fips-fix.patch
-
   #create build directory
   echo Creating aasdk build directory
   mkdir build
@@ -471,20 +467,6 @@ if [ $gstreamer = true ]; then
 
   #change into newly cloned directory
   cd qt-gstreamer
-
-  if [ $BULLSEYE = true ] || [ $JAMMY = true ]; then
-    #apply 1.18 patch
-    echo Applying qt-gstreamer 1.18 patch
-    git apply $script_path/patches/qt-gstreamer-1.18.patch
-  fi
-
-  #apply greenline patch
-  echo Apply greenline patch
-  git apply $script_path/patches/greenline_fix.patch
-
-  #apply atomic patch
-  echo Apply atomic patch
-  git apply $script_path/patches/qt-gstreamer_atomic-load.patch
 
   #create build directory
   echo Creating Gstreamer build directory
