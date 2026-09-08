@@ -2,6 +2,7 @@
 #include <functional>
 
 #include <attachedpictureframe.h>
+#include <audioproperties.h>
 #include <fileref.h>
 #include <flacfile.h>
 #include <flacpicture.h>
@@ -20,6 +21,7 @@
 #include <QMediaPlaylist>
 #include <QMouseEvent>
 #include <QPair>
+#include <QRandomGenerator>
 #include <QStyle>
 
 #include "app/window.hpp"
@@ -72,6 +74,51 @@ QPixmap local_track_art(QString path)
     QPixmap pixmap;
     pixmap.loadFromData(reinterpret_cast<const uchar *>(data.data()), data.size());
     return pixmap;
+}
+
+// Reads one file's artist/album/track-number/duration tags for Artists-view
+// grouping - unlike local_track_art()'s per-format branching (needed for
+// cover art, which TagLib has no unified API for), plain TagLib::FileRef
+// already picks the right format itself for ordinary text tags. artist/album
+// are never left empty so grouping always has a bucket to put the track in -
+// fallback_title (the same completeBaseName()/synced-name titles populate()
+// and search() already use) fills in the same way for a missing tag title.
+LocalPlayerTab::LocalTrack read_local_track(QString path, QString fallback_title)
+{
+    LocalPlayerTab::LocalTrack track;
+    track.path = path;
+    track.title = fallback_title;
+
+    TagLib::FileRef file(path.toLocal8Bit().constData());
+    if (!file.isNull() && file.tag()) {
+        TagLib::Tag *tag = file.tag();
+        QString title = QString::fromUtf8(tag->title().toCString(true)).trimmed();
+        if (!title.isEmpty())
+            track.title = title;
+        track.artist = QString::fromUtf8(tag->artist().toCString(true)).trimmed();
+        track.album = QString::fromUtf8(tag->album().toCString(true)).trimmed();
+        track.track_number = static_cast<int>(tag->track());
+    }
+    if (!file.isNull() && file.audioProperties())
+        track.duration_ms = file.audioProperties()->length() * 1000;
+
+    if (track.artist.isEmpty())
+        track.artist = "Unknown Artist";
+    if (track.album.isEmpty())
+        track.album = "Unknown Album";
+
+    return track;
+}
+
+// Disc/track order when it's known, falling back to title - shared by
+// populate_tracks() and play_external(), both of which need one album's
+// tracks in real listening order rather than the alphabetical order every
+// other grid in this app uses.
+bool by_track_order(const LocalPlayerTab::LocalTrack &a, const LocalPlayerTab::LocalTrack &b)
+{
+    if (a.track_number != b.track_number)
+        return a.track_number < b.track_number;
+    return QString::compare(a.title, b.title, Qt::CaseInsensitive) < 0;
 }
 
 // How many tile_width-wide columns actually fit across area's current
@@ -268,7 +315,14 @@ BluetoothPlayerTab::BluetoothPlayerTab(Arbiter &arbiter, QWidget *parent)
 {
     QVBoxLayout *layout = new QVBoxLayout(this);
 
+    // track_widget() used to sit flush against the tab bar with all the
+    // empty space left below controls_widget() - stretching above and below
+    // it instead centers the art/title/subtitle block in the space above
+    // the transport controls, which stay docked at the bottom (see
+    // conversation - "move the icon and text down").
+    layout->addStretch(1);
     layout->addWidget(this->track_widget());
+    layout->addStretch(1);
     layout->addWidget(this->controls_widget());
 }
 
@@ -285,7 +339,7 @@ QWidget *BluetoothPlayerTab::track_widget()
     QVBoxLayout *layout = new QVBoxLayout(widget);
     layout->setAlignment(Qt::AlignHCenter);
 
-    int art_size = 240 * this->arbiter.layout().scale;
+    int art_size = 320 * this->arbiter.layout().scale;
     QLabel *album_art = new QLabel(widget);
     album_art->setFixedSize(art_size, art_size);
     album_art->setAlignment(Qt::AlignCenter);
@@ -788,8 +842,9 @@ LocalPlayerTab::LocalPlayerTab(Arbiter &arbiter, QWidget *parent)
     , player(new QMediaPlayer(this))
     , browser_area(new QScrollArea(this))
     , browser_container(new QWidget(this->browser_area))
+    , letter_index(new QWidget(this))
     , path_label(new QLabel(this))
-    , home_button(nullptr)
+    , rescan_button(nullptr)
     , search_input(nullptr)
 {
     QMediaPlaylist *playlist = new QMediaPlaylist(this);
@@ -810,6 +865,20 @@ LocalPlayerTab::LocalPlayerTab(Arbiter &arbiter, QWidget *parent)
     this->browser_area->setFrameShape(QFrame::NoFrame);
     Session::Forge::to_touch_scroller(this->browser_area);
 
+    // A-Z jump strip, same pattern as JellyfinTab/DabPlayerTab's own - only
+    // populated by populate_artists(), since that's the only Local screen
+    // with enough same-level entries (potentially hundreds of artists) to
+    // make jumping worthwhile.
+    new QVBoxLayout(this->letter_index);
+    this->letter_index->layout()->setContentsMargins(0, 0, 0, 0);
+    this->letter_index->setFixedWidth(50);
+
+    QWidget *browse_row = new QWidget(this);
+    QHBoxLayout *browse_row_layout = new QHBoxLayout(browse_row);
+    browse_row_layout->setContentsMargins(0, 0, 0, 0);
+    browse_row_layout->addWidget(this->browser_area, 1);
+    browse_row_layout->addWidget(this->letter_index);
+
     connect(this->player->playlist(), &QMediaPlaylist::currentIndexChanged, [this](int idx) {
         QString playing = idx < 0 ? QString() : this->player->playlist()->media(idx).canonicalUrl().toLocalFile();
         for (auto it = this->track_tiles.constBegin(); it != this->track_tiles.constEnd(); ++it)
@@ -818,21 +887,19 @@ LocalPlayerTab::LocalPlayerTab(Arbiter &arbiter, QWidget *parent)
 
     QVBoxLayout *layout = new QVBoxLayout(this);
     layout->addWidget(this->header_widget());
-    layout->addWidget(this->browser_area, 1);
+    layout->addWidget(browse_row, 1);
     layout->addWidget(this->seek_widget());
     layout->addWidget(this->controls_widget());
 
     // Deferred rather than called directly here - this runs during the
     // whole app's construction, before the main window's first show(), so
     // browser_area has no real geometry yet and columns_for_width() would
-    // permanently bake in 1 column (confirmed live). Letting the event
-    // loop turn over once first means the window's actually been shown and
-    // laid out by the time this runs.
-    QTimer::singleShot(0, this, [this] { this->navigate(this->current_path.isEmpty() ? this->config->get_media_home() : this->current_path); });
+    // permanently bake in 1 column (confirmed live). ensure_library_scanned()
+    // covers this the same way on its own (see there) for this first call,
+    // since the library is never loaded yet at this point.
+    this->ensure_library_scanned();
     // Backstop for the above - see ResizeWatcher's own comment.
-    new ResizeWatcher(this->browser_area->viewport(), [this] {
-        this->navigate(this->current_path.isEmpty() ? this->config->get_media_home() : this->current_path);
-    }, this);
+    new ResizeWatcher(this->browser_area->viewport(), [this] { this->restore_view(); }, this);
 }
 
 QWidget *LocalPlayerTab::header_widget()
@@ -840,14 +907,23 @@ QWidget *LocalPlayerTab::header_widget()
     QWidget *widget = new QWidget(this);
     QHBoxLayout *layout = new QHBoxLayout(widget);
 
-    this->home_button = new QPushButton(widget);
-    this->home_button->setFlat(true);
-    this->home_button->setCheckable(true);
-    this->arbiter.forge().iconize("playlist_add", "playlist_add_check", this->home_button, 24);
-    connect(this->home_button, &QPushButton::clicked, [this](bool checked = false) {
-        this->config->set_media_home(checked ? this->current_path : QDir().absolutePath());
+    this->rescan_button = new QPushButton(widget);
+    this->rescan_button->setFlat(true);
+    this->arbiter.forge().iconize("refresh", this->rescan_button, 24);
+    connect(this->rescan_button, &QPushButton::clicked, [this] {
+        this->library_loaded = false;
+        this->ensure_library_scanned();
     });
-    layout->addWidget(this->home_button);
+    layout->addWidget(this->rescan_button);
+
+    // Always available regardless of which artist/album is currently in
+    // view - a real music library needs a "play everything, shuffled"
+    // entry point that isn't scoped to wherever browsing happens to be.
+    QPushButton *shuffle_all_button = new QPushButton(widget);
+    shuffle_all_button->setFlat(true);
+    this->arbiter.forge().iconize("shuffle", shuffle_all_button, 24);
+    connect(shuffle_all_button, &QPushButton::clicked, [this] { this->shuffle_all(); });
+    layout->addWidget(shuffle_all_button);
 
     this->path_label->setAlignment(Qt::AlignCenter);
     layout->addWidget(this->path_label, 1);
@@ -870,90 +946,6 @@ QWidget *LocalPlayerTab::header_widget()
     return widget;
 }
 
-void LocalPlayerTab::navigate(QString path)
-{
-    this->current_path = path;
-    this->path_label->setText(path);
-    this->home_button->setChecked(this->config->get_media_home() == path);
-    this->populate(path);
-}
-
-void LocalPlayerTab::populate(QString path)
-{
-    this->track_tiles.clear();
-
-    QLayout *container_layout = this->browser_container->layout();
-    QLayoutItem *child;
-    while ((child = container_layout->takeAt(0)) != nullptr) {
-        delete child->widget();
-        delete child;
-    }
-
-    QWidget *grid_widget = new QWidget(this->browser_container);
-    QGridLayout *grid = new QGridLayout(grid_widget);
-    grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);
-    const int columns = columns_for_width(this->browser_area, 180 * this->arbiter.layout().scale, 9);
-    int i = 0;
-
-    QDir dir(path);
-    if (!dir.isRoot()) {
-        QToolButton *up = this->arbiter.forge().media_tile("↲ Back", QString());
-        connect(up, &QToolButton::clicked, [this, path] {
-            QDir parent(path);
-            parent.cdUp();
-            this->navigate(parent.absolutePath());
-        });
-        grid->addWidget(up, 0, 0);
-        i++;
-    }
-
-    // The Jellyfin sync destination is deliberately never shown as a
-    // browsable subfolder itself - its audio gets folded straight into the
-    // library root's own track listing below instead (see conversation -
-    // synced tracks should show up "as local", not live behind a folder no
-    // one taps into).
-    QString jellyfin_dir = QDir(this->config->get_jellyfin_offline_dir()).absolutePath();
-
-    QFileInfoList dirs = dir.entryInfoList(QDir::AllDirs | QDir::NoDotAndDotDot | QDir::Readable, QDir::Name | QDir::IgnoreCase);
-    for (const QFileInfo &info : dirs) {
-        if (info.absoluteFilePath() == jellyfin_dir)
-            continue;
-        QToolButton *tile = this->arbiter.forge().media_tile(info.fileName(), QString());
-        QString subpath = info.absoluteFilePath();
-        connect(tile, &QToolButton::clicked, [this, subpath] { this->navigate(subpath); });
-        grid->addWidget(tile, i / columns, i % columns);
-        i++;
-    }
-
-    QStringList track_names = dir.entryList(QStringList() << "*.flac" << "*.m4a" << "*.mp3", QDir::Files | QDir::Readable, QDir::Name | QDir::IgnoreCase);
-    QList<QPair<QString, QString>> tracks;  // (path, display title)
-    for (const QString &name : track_names)
-        tracks.append({dir.absoluteFilePath(name), QFileInfo(name).completeBaseName()});
-
-    // Only at the library root - showing a synced track again inside every
-    // subfolder it doesn't actually belong to would be more confusing than
-    // helpful.
-    if (QDir(path).absolutePath() == QDir(this->config->get_media_home()).absolutePath())
-        tracks.append(this->arbiter.system().jellyfin.offline_audio_tracks());
-
-    std::sort(tracks.begin(), tracks.end(), [](const QPair<QString, QString> &a, const QPair<QString, QString> &b) {
-        return QString::compare(a.second, b.second, Qt::CaseInsensitive) < 0;
-    });
-
-    QStringList track_paths;
-    for (const auto &track : tracks)
-        track_paths.append(track.first);
-
-    for (int t = 0; t < tracks.size(); t++) {
-        QToolButton *tile = this->build_track_tile(tracks[t].first, tracks[t].second, track_paths, t);
-        grid->addWidget(tile, i / columns, i % columns);
-        i++;
-    }
-
-    container_layout->addWidget(grid_widget);
-    static_cast<QVBoxLayout *>(container_layout)->addStretch();
-}
-
 QToolButton *LocalPlayerTab::build_track_tile(QString track_path, QString title, QStringList siblings, int index)
 {
     QToolButton *tile = this->arbiter.forge().media_tile(title, QString(), local_track_art(track_path));
@@ -961,22 +953,53 @@ QToolButton *LocalPlayerTab::build_track_tile(QString track_path, QString title,
     tile->setChecked(this->player->playlist()->currentMedia().canonicalUrl().toLocalFile() == track_path);
     this->track_tiles[track_path] = tile;
 
-    // Only touches the active playlist here, when a track is actually
-    // chosen to play - browsing/searching doesn't rebuild it, so switching
-    // views doesn't stop whatever's currently playing. Rebuilt from
-    // whatever's currently listed (a folder's tracks, or a search's
-    // matches) so next/prev walk through that same set.
     connect(tile, &QToolButton::clicked, [this, siblings, index, track_path, title] {
-        this->player->playlist()->clear();
-        for (const QString &p : siblings)
-            this->player->playlist()->addMedia(QMediaContent(QUrl::fromLocalFile(p)));
-        this->player->playlist()->setCurrentIndex(index);
-        this->player->play();
-
-        this->arbiter.system().recently_played.record({"Local", track_path, title, QString(), 0});
+        this->play_track(siblings, index, track_path, title);
     });
 
     return tile;
+}
+
+// Shared by build_track_tile() (Folders/search's square tiles) and
+// build_track_row() (Artists view's album track list) - only touches the
+// active playlist when a track is actually chosen to play, so browsing/
+// searching/switching views never stops whatever's currently playing.
+// Rebuilt from whatever's currently listed (a folder's tracks, a search's
+// matches, or an album's tracks) so next/prev walk through that same set.
+void LocalPlayerTab::play_track(QStringList siblings, int index, QString path, QString title)
+{
+    this->player->playlist()->clear();
+    for (const QString &p : siblings)
+        this->player->playlist()->addMedia(QMediaContent(QUrl::fromLocalFile(p)));
+    this->player->playlist()->setCurrentIndex(index);
+    this->player->play();
+
+    this->arbiter.system().recently_played.record({"Local", path, title, QString(), 0});
+}
+
+// Shuffles the whole library into a fresh play order (rather than handing
+// tracks to the playlist in their scanned order and relying on
+// QMediaPlaylist::Random) so it plays through as one real shuffled queue
+// straight away, independent of whatever shuffle/repeat mode
+// controls_widget()'s own buttons are currently set to.
+void LocalPlayerTab::shuffle_all()
+{
+    if (this->library.isEmpty())
+        return;
+
+    QStringList paths;
+    for (const LocalTrack &track : this->library)
+        paths.append(track.path);
+    std::shuffle(paths.begin(), paths.end(), *QRandomGenerator::global());
+
+    LocalTrack first;
+    for (const LocalTrack &track : this->library)
+        if (track.path == paths.first()) {
+            first = track;
+            break;
+        }
+
+    this->play_track(paths, 0, first.path, first.title);
 }
 
 void LocalPlayerTab::search()
@@ -1000,36 +1023,35 @@ void LocalPlayerTab::populate_search_results()
         delete child;
     }
 
+    QLayout *index_layout = this->letter_index->layout();
+    QLayoutItem *index_child;
+    while ((index_child = index_layout->takeAt(0)) != nullptr) {
+        delete index_child->widget();
+        delete index_child;
+    }
+
     this->path_label->setText(QString("Search: \"%1\"").arg(this->search_query));
 
-    // Always searches the whole library from media_home down, regardless of
-    // which folder browsing was left in - matches how DashTube/Jellyfin's
-    // search works (the whole library, not just whatever's currently in
-    // view), and is a lot more useful than a folder-scoped search would be.
-    // Synced Jellyfin tracks are searched by their real name the same way
-    // populate() lists them, not by their id-named file.
-    QList<QPair<QString, QString>> tracks;  // (path, display title)
-    QDirIterator it(this->config->get_media_home(), QStringList() << "*.flac" << "*.m4a" << "*.mp3",
-                     QDir::Files | QDir::Readable, QDirIterator::Subdirectories);
-    while (it.hasNext() && tracks.size() < 300) {
-        QString path = it.next();
-        QString title = QFileInfo(path).completeBaseName();
-        if (title.contains(this->search_query, Qt::CaseInsensitive))
-            tracks.append({path, title});
-    }
-    for (const auto &track : this->arbiter.system().jellyfin.offline_audio_tracks()) {
-        if (tracks.size() >= 300)
+    // Filters the already tag-scanned library (title, artist, or album) -
+    // matches on real metadata rather than on-disk filenames, and searching
+    // artist/album too (not just title) is a lot more useful for a real
+    // music library than a title-only search would be.
+    QList<LocalTrack> matches;
+    for (const LocalTrack &track : this->library) {
+        if (matches.size() >= 300)
             break;
-        if (track.second.contains(this->search_query, Qt::CaseInsensitive))
-            tracks.append(track);
+        if (track.title.contains(this->search_query, Qt::CaseInsensitive)
+            || track.artist.contains(this->search_query, Qt::CaseInsensitive)
+            || track.album.contains(this->search_query, Qt::CaseInsensitive))
+            matches.append(track);
     }
-    std::sort(tracks.begin(), tracks.end(), [](const QPair<QString, QString> &a, const QPair<QString, QString> &b) {
-        return QString::compare(a.second, b.second, Qt::CaseInsensitive) < 0;
+    std::sort(matches.begin(), matches.end(), [](const LocalTrack &a, const LocalTrack &b) {
+        return QString::compare(a.title, b.title, Qt::CaseInsensitive) < 0;
     });
 
     QStringList track_paths;
-    for (const auto &track : tracks)
-        track_paths.append(track.first);
+    for (const LocalTrack &track : matches)
+        track_paths.append(track.path);
 
     QWidget *grid_widget = new QWidget(this->browser_container);
     QGridLayout *grid = new QGridLayout(grid_widget);
@@ -1038,17 +1060,16 @@ void LocalPlayerTab::populate_search_results()
     int i = 0;
 
     QToolButton *clear = this->arbiter.forge().media_tile("✕ Clear search", QString());
-    QString return_path = this->current_path;
-    connect(clear, &QToolButton::clicked, [this, return_path] {
+    connect(clear, &QToolButton::clicked, [this] {
         this->search_query.clear();
         this->search_input->clear();
-        this->navigate(return_path);
+        this->restore_view();
     });
     grid->addWidget(clear, 0, 0);
     i++;
 
-    for (int t = 0; t < tracks.size(); t++) {
-        QToolButton *tile = this->build_track_tile(tracks[t].first, tracks[t].second, track_paths, t);
+    for (int t = 0; t < matches.size(); t++) {
+        QToolButton *tile = this->build_track_tile(matches[t].path, matches[t].title, track_paths, t);
         grid->addWidget(tile, i / columns, i % columns);
         i++;
     }
@@ -1057,30 +1078,326 @@ void LocalPlayerTab::populate_search_results()
     static_cast<QVBoxLayout *>(container_layout)->addStretch();
 }
 
-void LocalPlayerTab::play_external(QString path)
+// Whatever artist/album/track level was active before a search started (or
+// before a resize) - "Clear search" and the constructor's ResizeWatcher
+// backstop both return here rather than always assuming the artist root, so
+// searching (or resizing) from inside an album's track list doesn't dump
+// back out to the root on clear.
+void LocalPlayerTab::restore_view()
 {
-    QDir dir(QFileInfo(path).absolutePath());
-    QStringList track_names = dir.entryList(QStringList() << "*.flac" << "*.m4a" << "*.mp3", QDir::Files | QDir::Readable, QDir::Name | QDir::IgnoreCase);
+    if (!this->current_album.isEmpty())
+        this->populate_tracks(this->current_artist, this->current_album);
+    else if (!this->current_artist.isEmpty())
+        this->populate_albums(this->current_artist);
+    else
+        this->populate_artists();
+}
 
-    QStringList track_paths;
-    int index = 0;
-    for (const QString &name : track_names) {
-        QString p = dir.absoluteFilePath(name);
-        if (p == path)
-            index = track_paths.size();
-        track_paths.append(p);
+void LocalPlayerTab::ensure_library_scanned()
+{
+    if (this->library_loaded) {
+        this->populate_artists();
+        return;
     }
 
-    this->player->playlist()->clear();
-    for (const QString &p : track_paths)
-        this->player->playlist()->addMedia(QMediaContent(QUrl::fromLocalFile(p)));
-    this->player->playlist()->setCurrentIndex(index);
-    this->player->play();
+    this->track_tiles.clear();
+    QLayout *container_layout = this->browser_container->layout();
+    QLayoutItem *child;
+    while ((child = container_layout->takeAt(0)) != nullptr) {
+        delete child->widget();
+        delete child;
+    }
+    this->path_label->setText("Scanning library…");
 
-    // So the folder grid reflects what's now playing once the user actually
-    // looks at this tab, same as tapping there normally would.
+    // Deferred so "Scanning…" actually paints before the tag scan below
+    // blocks the event loop - same deferral pattern the constructor already
+    // uses for the first-ever populate() call. TagLib only reads each
+    // file's tag/header block, never decodes audio, so even a large library
+    // scans in well under a second, but doing it inline here would still
+    // freeze the very frame that's supposed to say "Scanning…".
+    QTimer::singleShot(0, this, [this] {
+        this->scan_library();
+        this->library_loaded = true;
+        this->populate_artists();
+    });
+}
+
+void LocalPlayerTab::scan_library()
+{
+    this->library.clear();
+
+    // Same split populate()'s folder-root listing already relies on: synced
+    // Jellyfin tracks are folded in separately below (with their real
+    // names/tags), rather than picked up here under their on-disk (often
+    // id-named) filenames.
+    QString jellyfin_dir = QDir(this->config->get_jellyfin_offline_dir()).absolutePath();
+    QDirIterator it(this->config->get_media_home(), QStringList() << "*.flac" << "*.m4a" << "*.mp3",
+                     QDir::Files | QDir::Readable, QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        QString path = it.next();
+        if (path.startsWith(jellyfin_dir + "/"))
+            continue;
+        this->library.append(read_local_track(path, QFileInfo(path).completeBaseName()));
+    }
+    for (const auto &track : this->arbiter.system().jellyfin.offline_audio_tracks())
+        this->library.append(read_local_track(track.first, track.second));
+}
+
+void LocalPlayerTab::populate_artists()
+{
+    this->current_artist.clear();
+    this->current_album.clear();
+    this->path_label->setText("Music");
+
+    this->track_tiles.clear();
+    QLayout *container_layout = this->browser_container->layout();
+    QLayoutItem *child;
+    while ((child = container_layout->takeAt(0)) != nullptr) {
+        delete child->widget();
+        delete child;
+    }
+
+    QLayout *index_layout = this->letter_index->layout();
+    QLayoutItem *index_child;
+    while ((index_child = index_layout->takeAt(0)) != nullptr) {
+        delete index_child->widget();
+        delete index_child;
+    }
+
+    // One representative track per artist, purely so its embedded art can
+    // stand in for the artist's own tile - there's no separate "artist
+    // photo" source for local files.
+    QMap<QString, QString> artist_art;
+    QStringList artists;
+    for (const LocalTrack &track : this->library) {
+        if (!artists.contains(track.artist)) {
+            artists.append(track.artist);
+            artist_art[track.artist] = track.path;
+        }
+    }
+    std::sort(artists.begin(), artists.end(), [](const QString &a, const QString &b) {
+        return QString::compare(a, b, Qt::CaseInsensitive) < 0;
+    });
+
+    QMap<QString, QStringList> groups;  // first letter -> artist names
+    for (const QString &artist : artists) {
+        QString letter = "#";
+        if (!artist.isEmpty() && artist.at(0).isLetter())
+            letter = artist.at(0).toUpper();
+        groups[letter].append(artist);
+    }
+
+    const int columns = columns_for_width(this->browser_area, 180 * this->arbiter.layout().scale, 9);
+    for (auto group = groups.constBegin(); group != groups.constEnd(); ++group) {
+        QLabel *header = new QLabel(group.key(), this->browser_container);
+        header->setFont(this->arbiter.forge().font(20));
+        container_layout->addWidget(header);
+
+        QWidget *grid_widget = new QWidget(this->browser_container);
+        QGridLayout *grid = new QGridLayout(grid_widget);
+        grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+        int i = 0;
+        for (const QString &artist : group.value()) {
+            QToolButton *tile = this->arbiter.forge().media_tile(artist, QString(), local_track_art(artist_art[artist]));
+            connect(tile, &QToolButton::clicked, [this, artist] { this->populate_albums(artist); });
+            grid->addWidget(tile, i / columns, i % columns);
+            i++;
+        }
+        container_layout->addWidget(grid_widget);
+
+        QPushButton *jump = new QPushButton(group.key(), this->letter_index);
+        jump->setFlat(true);
+        jump->setFixedHeight(36);
+        connect(jump, &QPushButton::clicked, [this, header] { this->browser_area->ensureWidgetVisible(header, 0, 0); });
+        index_layout->addWidget(jump);
+    }
+    static_cast<QVBoxLayout *>(index_layout)->addStretch();
+
+    static_cast<QVBoxLayout *>(container_layout)->addStretch();
+}
+
+void LocalPlayerTab::populate_albums(QString artist)
+{
+    this->current_artist = artist;
+    this->current_album.clear();
+    this->path_label->setText(QString("Music › %1").arg(artist));
+
+    this->track_tiles.clear();
+    QLayout *container_layout = this->browser_container->layout();
+    QLayoutItem *child;
+    while ((child = container_layout->takeAt(0)) != nullptr) {
+        delete child->widget();
+        delete child;
+    }
+
+    QLayout *index_layout = this->letter_index->layout();
+    QLayoutItem *index_child;
+    while ((index_child = index_layout->takeAt(0)) != nullptr) {
+        delete index_child->widget();
+        delete index_child;
+    }
+
+    QWidget *back_widget = new QWidget(this->browser_container);
+    QGridLayout *back_grid = new QGridLayout(back_widget);
+    QToolButton *up = this->arbiter.forge().media_tile("↲ Back", QString());
+    connect(up, &QToolButton::clicked, [this] { this->populate_artists(); });
+    back_grid->addWidget(up, 0, 0);
+    container_layout->addWidget(back_widget);
+
+    // One representative track per album, for the same reason as above -
+    // stands in for cover art no other local source provides.
+    QMap<QString, QString> album_art;
+    QStringList albums;
+    for (const LocalTrack &track : this->library) {
+        if (track.artist != artist)
+            continue;
+        if (!albums.contains(track.album)) {
+            albums.append(track.album);
+            album_art[track.album] = track.path;
+        }
+    }
+    std::sort(albums.begin(), albums.end(), [](const QString &a, const QString &b) {
+        return QString::compare(a, b, Qt::CaseInsensitive) < 0;
+    });
+
+    QWidget *grid_widget = new QWidget(this->browser_container);
+    QGridLayout *grid = new QGridLayout(grid_widget);
+    grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    const int columns = columns_for_width(this->browser_area, 180 * this->arbiter.layout().scale, 9);
+    int i = 0;
+    for (const QString &album : albums) {
+        QToolButton *tile = this->arbiter.forge().media_tile(album, QString(), local_track_art(album_art[album]));
+        connect(tile, &QToolButton::clicked, [this, artist, album] { this->populate_tracks(artist, album); });
+        grid->addWidget(tile, i / columns, i % columns);
+        i++;
+    }
+    container_layout->addWidget(grid_widget);
+    static_cast<QVBoxLayout *>(container_layout)->addStretch();
+}
+
+void LocalPlayerTab::populate_tracks(QString artist, QString album)
+{
+    this->current_artist = artist;
+    this->current_album = album;
+    this->path_label->setText(QString("Music › %1 › %2").arg(artist, album));
+
+    this->track_tiles.clear();
+    QLayout *container_layout = this->browser_container->layout();
+    QLayoutItem *child;
+    while ((child = container_layout->takeAt(0)) != nullptr) {
+        delete child->widget();
+        delete child;
+    }
+
+    QLayout *index_layout = this->letter_index->layout();
+    QLayoutItem *index_child;
+    while ((index_child = index_layout->takeAt(0)) != nullptr) {
+        delete index_child->widget();
+        delete index_child;
+    }
+
+    QWidget *back_widget = new QWidget(this->browser_container);
+    QGridLayout *back_grid = new QGridLayout(back_widget);
+    QToolButton *up = this->arbiter.forge().media_tile("↲ Back", QString());
+    connect(up, &QToolButton::clicked, [this, artist] { this->populate_albums(artist); });
+    back_grid->addWidget(up, 0, 0);
+    container_layout->addWidget(back_widget);
+
+    QList<LocalTrack> tracks;
+    for (const LocalTrack &track : this->library)
+        if (track.artist == artist && track.album == album)
+            tracks.append(track);
+
+    std::sort(tracks.begin(), tracks.end(), by_track_order);
+
+    QStringList track_paths;
+    for (const LocalTrack &track : tracks)
+        track_paths.append(track.path);
+
+    QWidget *rows_widget = new QWidget(this->browser_container);
+    QVBoxLayout *rows_layout = new QVBoxLayout(rows_widget);
+    rows_layout->setSpacing(4);
+    for (int t = 0; t < tracks.size(); t++)
+        rows_layout->addWidget(this->build_track_row(tracks[t], track_paths, t));
+    container_layout->addWidget(rows_widget);
+
+    static_cast<QVBoxLayout *>(container_layout)->addStretch();
+}
+
+// A compact full-width row (track number, title, duration) rather than
+// build_track_tile()'s big square tile - an album's tracks are already a
+// small, known-order set, so a dense list reads more like a real album
+// listing and fits far more of them on screen at once than square tiles
+// would.
+QToolButton *LocalPlayerTab::build_track_row(LocalPlayerTab::LocalTrack track, QStringList siblings, int index)
+{
+    QString number = track.track_number > 0 ? QString("%1.  ").arg(track.track_number, 2, 10, QChar('0')) : QString();
+    QString duration = track.duration_ms > 0 ? QString("   —   %1").arg(LocalPlayerTab::durationFmt(track.duration_ms)) : QString();
+
+    QToolButton *row = new QToolButton(this->browser_container);
+    row->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    row->setText(number + track.title + duration);
+    row->setFont(this->arbiter.forge().font(16));
+    row->setFixedHeight(60 * this->arbiter.layout().scale);
+    row->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    row->setCheckable(true);
+    row->setStyleSheet(
+        "QToolButton { text-align: left; padding-left: 20px; } "
+        "QToolButton:checked { background-color: palette(base); border-radius: 8px; }");
+    row->setChecked(this->player->playlist()->currentMedia().canonicalUrl().toLocalFile() == track.path);
+    this->track_tiles[track.path] = row;
+
+    QString path = track.path;
+    QString title = track.title;
+    connect(row, &QToolButton::clicked, [this, siblings, index, path, title] {
+        this->play_track(siblings, index, path, title);
+    });
+
+    return row;
+}
+
+void LocalPlayerTab::play_external(QString path)
+{
     this->search_query.clear();
-    this->navigate(dir.absolutePath());
+
+    LocalTrack match;
+    bool found = false;
+    for (const LocalTrack &track : this->library) {
+        if (track.path == path) {
+            match = track;
+            found = true;
+            break;
+        }
+    }
+
+    // Falls back to playing path alone if it's not in the scanned library
+    // (e.g. called in the brief window before the very first scan
+    // finishes) - better than doing nothing, even though it won't land on
+    // a real album view.
+    if (!found) {
+        this->play_track({path}, 0, path, QFileInfo(path).completeBaseName());
+        this->populate_artists();
+        return;
+    }
+
+    QList<LocalTrack> album_tracks;
+    for (const LocalTrack &track : this->library)
+        if (track.artist == match.artist && track.album == match.album)
+            album_tracks.append(track);
+    std::sort(album_tracks.begin(), album_tracks.end(), by_track_order);
+
+    QStringList siblings;
+    int index = 0;
+    for (int i = 0; i < album_tracks.size(); i++) {
+        siblings.append(album_tracks[i].path);
+        if (album_tracks[i].path == path)
+            index = i;
+    }
+
+    this->play_track(siblings, index, match.path, match.title);
+    // So the track list reflects what's now playing once the user actually
+    // looks at this tab, same as tapping into that album normally would.
+    this->populate_tracks(match.artist, match.album);
 }
 
 QWidget *LocalPlayerTab::seek_widget()
@@ -1149,8 +1466,8 @@ QWidget *LocalPlayerTab::controls_widget()
     // state on its own (confirmed live). Scoped override rather than
     // touching that global rule, since this is the first icon-only flat
     // toggle that actually needs a colour change rather than an icon swap
-    // (compare home_button/play_button, which swap between two different
-    // icons instead).
+    // (compare play_button, which swaps between two different icons
+    // instead).
     shuffle_button->setFlat(true);
     shuffle_button->setCheckable(true);
     shuffle_button->setStyleSheet("QPushButton:checked { background-color: palette(base); border-radius: 8px; }");
@@ -1751,8 +2068,8 @@ QWidget *JellyfinTab::controls_widget()
     // state on its own (confirmed live). Scoped override rather than
     // touching that global rule, since this is the first icon-only flat
     // toggle that actually needs a colour change rather than an icon swap
-    // (compare home_button/play_button, which swap between two different
-    // icons instead).
+    // (compare play_button, which swaps between two different icons
+    // instead).
     shuffle_button->setFlat(true);
     shuffle_button->setCheckable(true);
     shuffle_button->setStyleSheet("QPushButton:checked { background-color: palette(base); border-radius: 8px; }");

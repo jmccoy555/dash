@@ -143,6 +143,11 @@ class DabPlayerTab : public QWidget {
     QWidget *header_widget();
 };
 
+// A music library, not a file browser - grouped by artist/album/track (tags
+// read via TagLib) rather than raw filesystem folders, so it feels like a
+// real integrated media source instead of exposing the underlying disk
+// layout (see conversation - "lock to the music for a seamless dash
+// integration").
 class LocalPlayerTab : public QWidget {
     Q_OBJECT
 
@@ -151,10 +156,24 @@ class LocalPlayerTab : public QWidget {
 
     static QString durationFmt(int total_ms);
 
-    // Rebuilds the playlist from path's containing folder (same as tapping
-    // it normally would) and plays it - the Recent tab's entry point for
-    // replaying a local track.
+    // Finds path in the scanned library and plays its whole album in track
+    // order, landing on that album's track list (same as tapping into it
+    // normally would) - the Recent tab's entry point for replaying a local
+    // track.
     void play_external(QString path);
+
+    // One scanned track's tag data, read by read_local_track() - artist/album
+    // always end up non-empty ("Unknown Artist"/"Unknown Album" when a file
+    // has no tags at all), so grouping always has somewhere to put every
+    // track.
+    struct LocalTrack {
+        QString path;
+        QString title;
+        QString artist;
+        QString album;
+        int track_number = 0;
+        int duration_ms = 0;
+    };
 
    private:
     Arbiter &arbiter;
@@ -162,22 +181,35 @@ class LocalPlayerTab : public QWidget {
     QWidget *header_widget();
     QWidget *seek_widget();
     QWidget *controls_widget();
-    void navigate(QString path);
-    void populate(QString path);
     void search();
     void populate_search_results();
+    void restore_view();  // whatever artist/album/track level was active before a search, used by "Clear search" and by resizes
     QToolButton *build_track_tile(QString track_path, QString title, QStringList siblings, int index);
+    void play_track(QStringList siblings, int index, QString path, QString title);  // shared by build_track_tile() and build_track_row()
+
+    void ensure_library_scanned();  // scans on first use, then just re-populates from the cached library
+    void scan_library();
+    void populate_artists();
+    void populate_albums(QString artist);
+    void populate_tracks(QString artist, QString album);
+    QToolButton *build_track_row(LocalTrack track, QStringList siblings, int index);
+    void shuffle_all();  // plays the whole library in random order - the header's persistent "Shuffle All" entry point
 
     Config *config;
     QMediaPlayer *player;
     QScrollArea *browser_area;
-    QWidget *browser_container;  // the grid - rebuilt (cleared + repopulated) on every navigate()/search(), same pattern as JellyfinTab
+    QWidget *browser_container;  // the grid - rebuilt (cleared + repopulated) on every populate_*()/search(), same pattern as JellyfinTab
+    QWidget *letter_index;       // A-Z jump strip alongside browser_area - only populated at the artist-grid root, same pattern as JellyfinTab/DabPlayerTab
     QLabel *path_label;
-    QPushButton *home_button;
+    QPushButton *rescan_button;  // rescans the library index (e.g. after adding files over USB)
     QLineEdit *search_input;
-    QString current_path;
     QString search_query;  // empty when not searching - set by search(), read by populate_search_results()
     QMap<QString, QToolButton *> track_tiles;  // absolute path -> its tile, so the currently-playing one can be highlighted without a full rebuild
+
+    QList<LocalTrack> library;    // flat tag-scanned index, built lazily on first use
+    bool library_loaded = false;
+    QString current_artist;       // empty means "at the artist grid root"
+    QString current_album;        // empty means "at current_artist's album grid" - set once inside an album's track list
 };
 
 class JellyfinTab : public QWidget {
