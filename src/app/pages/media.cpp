@@ -1067,7 +1067,7 @@ void LocalPlayerTab::populate_search_results()
     QWidget *grid_widget = new QWidget(this->browser_container);
     QGridLayout *grid = new QGridLayout(grid_widget);
     grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);
-    const int columns = columns_for_width(this->browser_area, 180 * this->arbiter.layout().scale, 9);
+    const int columns = columns_for_width(this->browser_area, 180 * this->arbiter.layout().scale, 5);
     int i = 0;
 
     QToolButton *clear = this->arbiter.forge().media_tile("✕ Clear search", QString());
@@ -1198,7 +1198,7 @@ void LocalPlayerTab::populate_artists()
         groups[letter].append(artist);
     }
 
-    const int columns = columns_for_width(this->browser_area, 180 * this->arbiter.layout().scale, 9);
+    const int columns = columns_for_width(this->browser_area, 180 * this->arbiter.layout().scale, 5);
     for (auto group = groups.constBegin(); group != groups.constEnd(); ++group) {
         QLabel *header = new QLabel(group.key(), this->browser_container);
         header->setFont(this->arbiter.forge().font(20));
@@ -1274,7 +1274,7 @@ void LocalPlayerTab::populate_albums(QString artist)
     QWidget *grid_widget = new QWidget(this->browser_container);
     QGridLayout *grid = new QGridLayout(grid_widget);
     grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);
-    const int columns = columns_for_width(this->browser_area, 180 * this->arbiter.layout().scale, 9);
+    const int columns = columns_for_width(this->browser_area, 180 * this->arbiter.layout().scale, 5);
     int i = 0;
     for (const QString &album : albums) {
         QToolButton *tile = this->arbiter.forge().media_tile(album, QString(), local_track_art(album_art[album]));
@@ -1718,7 +1718,7 @@ void JellyfinTab::populate(QList<Jellyfin::Item> items)
         delete child;
     }
 
-    const int columns = columns_for_width(this->browser_area, 180 * this->arbiter.layout().scale, 9);
+    const int columns = columns_for_width(this->browser_area, 180 * this->arbiter.layout().scale, 5);
 
     if (!this->nav_stack.isEmpty()) {
         QWidget *back_widget = new QWidget(this->browser_container);
@@ -1875,7 +1875,7 @@ QWidget *JellyfinTab::header_widget()
     // movie run on behind a view the user can't see.
     QPushButton *back_button = new QPushButton(widget);
     back_button->setFlat(true);
-    this->arbiter.forge().iconize("arrow_left", back_button, 24);
+    this->arbiter.forge().iconize("arrow_left", back_button, 32);
     back_button->hide();
     connect(back_button, &QPushButton::clicked, [this] {
         if (this->content_stack->currentWidget() == this->video_widget)
@@ -2174,7 +2174,7 @@ void YouTubeTab::populate(QList<YouTube::Video> results)
     QWidget *grid_widget = new QWidget(this->results_container);
     QGridLayout *grid = new QGridLayout(grid_widget);
     grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);  // see the equivalent comment in JellyfinTab::populate()
-    const int columns = columns_for_width(this->results_area, 180 * this->arbiter.layout().scale, 9);
+    const int columns = columns_for_width(this->results_area, 180 * this->arbiter.layout().scale, 5);
 
     for (int i = 0; i < results.size(); i++) {
         const YouTube::Video &video = results[i];
@@ -2246,7 +2246,7 @@ QWidget *YouTubeTab::header_widget()
     // playing, pauses and swaps back to the results list.
     QPushButton *back_button = new QPushButton(widget);
     back_button->setFlat(true);
-    this->arbiter.forge().iconize("arrow_left", back_button, 24);
+    this->arbiter.forge().iconize("arrow_left", back_button, 32);
     back_button->hide();
     connect(back_button, &QPushButton::clicked, [this] {
         this->player->pause();
@@ -2418,7 +2418,7 @@ void RecentTab::populate()
     QWidget *grid_widget = new QWidget(this->container);
     QGridLayout *grid = new QGridLayout(grid_widget);
     grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);
-    const int columns = columns_for_width(this->area, 180 * this->arbiter.layout().scale, 9);
+    const int columns = columns_for_width(this->area, 180 * this->arbiter.layout().scale, 5);
     int i = 0;
 
     const QList<RecentlyPlayed::Entry> &entries = this->arbiter.system().recently_played.entries();
