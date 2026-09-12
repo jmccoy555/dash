@@ -17,6 +17,13 @@ Gps::Gps(Arbiter &arbiter)
     , status_("Not configured")
 {
     connect(this->socket, &QTcpSocket::connected, this, [this] {
+        // Disables Nagle's algorithm - without this, TCP was observed
+        // batching gpsd's small once-a-second JSON reports before sending,
+        // compounding with delayed-ACK on the other end into a growing lag
+        // between the car's real position and what dash was forwarding on
+        // (reported as ~300m behind at driving speed).
+        this->socket->setSocketOption(QAbstractSocket::LowDelayOption, 1);
+
         // json:true switches gpsd to newline-delimited JSON reports instead
         // of its older plain-text protocol - every gpsd release in the last
         // decade-plus supports this.
@@ -44,6 +51,10 @@ Gps::Gps(Arbiter &arbiter)
     connect(this->socket, &QTcpSocket::disconnected, this, [this] {
         this->status_ = "Disconnected - retrying…";
         emit this->status_changed(this->status_);
+        // Stop feeding the last-known fix while disconnected - otherwise
+        // Android Auto keeps seeing "live" updates from a source that's
+        // actually gone stale, and never falls back to the phone's own GPS.
+        this->arbiter.android_auto().handler->clearLocation();
         QTimer::singleShot(5000, this, [this] { this->connect_socket(); });
     });
 
@@ -66,6 +77,12 @@ void Gps::set_enabled(bool enabled)
     this->socket->abort();
     this->buffer.clear();
     this->connect_socket();
+
+    // Only ever called from the Settings page at runtime (never during
+    // construction, unlike configure()), so arbiter.android_auto() is
+    // always safe here - see the dangling-handler note on handle_line().
+    if (!enabled)
+        this->arbiter.android_auto().handler->clearLocation();
 }
 
 void Gps::connect_socket()
