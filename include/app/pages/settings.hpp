@@ -74,6 +74,7 @@ class MediaSettingsTab : public QWidget {
    private:
     QWidget *settings_widget();
     QWidget *tabs_widget();
+    QWidget *jellyfin_widget();
 
     Arbiter &arbiter;
     Config *config;

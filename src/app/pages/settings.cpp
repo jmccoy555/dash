@@ -63,6 +63,8 @@ QWidget *MediaSettingsTab::settings_widget()
     QVBoxLayout *layout = new QVBoxLayout(widget);
 
     layout->addWidget(this->tabs_widget());
+    layout->addWidget(Session::Forge::br());
+    layout->addWidget(this->jellyfin_widget());
 
     QScrollArea *scroll_area = new QScrollArea(this);
     Session::Forge::to_touch_scroller(scroll_area);
@@ -99,6 +101,83 @@ QWidget *MediaSettingsTab::tabs_widget()
     }
 
     layout->addWidget(group, 1, Qt::AlignHCenter);
+
+    return widget;
+}
+
+// Moved here from JellyfinTab's own header (see conversation) - a settings
+// popup rather than a tab-local one matches every other service's settings
+// in this app, and means logging in doesn't require first opening the
+// Jellyfin tab.
+QWidget *MediaSettingsTab::jellyfin_widget()
+{
+    QWidget *widget = new QWidget(this);
+    QVBoxLayout *outer = new QVBoxLayout(widget);
+
+    QWidget *form = new QWidget(widget);
+    form->setMaximumWidth(500 * this->arbiter.layout().scale);
+    QVBoxLayout *layout = new QVBoxLayout(form);
+
+    QLabel *heading = new QLabel("Jellyfin", form);
+    heading->setAlignment(Qt::AlignCenter);
+    layout->addWidget(heading);
+
+    QLineEdit *server_input = new QLineEdit(this->config->get_jellyfin_server_url(), form);
+    server_input->setContextMenuPolicy(Qt::NoContextMenu);
+    server_input->setFont(this->arbiter.forge().font(16));
+    server_input->setAlignment(Qt::AlignCenter);
+    server_input->setPlaceholderText("Server URL");
+    connect(server_input, &QLineEdit::textEdited, [this](QString text) { this->config->set_jellyfin_server_url(text); });
+    layout->addWidget(server_input);
+
+    QLineEdit *username_input = new QLineEdit(form);
+    username_input->setContextMenuPolicy(Qt::NoContextMenu);
+    username_input->setFont(this->arbiter.forge().font(16));
+    username_input->setAlignment(Qt::AlignCenter);
+    username_input->setPlaceholderText("Username");
+    layout->addWidget(username_input);
+
+    QLineEdit *password_input = new QLineEdit(form);
+    password_input->setContextMenuPolicy(Qt::NoContextMenu);
+    password_input->setFont(this->arbiter.forge().font(16));
+    password_input->setAlignment(Qt::AlignCenter);
+    password_input->setEchoMode(QLineEdit::Password);
+    password_input->setPlaceholderText("Password");
+    layout->addWidget(password_input);
+
+    QLabel *login_status = new QLabel(form);
+    login_status->setAlignment(Qt::AlignCenter);
+    layout->addWidget(login_status);
+
+    QPushButton *login_button = new QPushButton("Log in", form);
+    connect(login_button, &QPushButton::clicked, [this, login_status, username_input, password_input] {
+        login_status->setText("Logging in…");
+        this->arbiter.system().jellyfin.authenticate(this->config->get_jellyfin_server_url(), username_input->text(), password_input->text());
+    });
+    layout->addWidget(login_button);
+
+    connect(&this->arbiter.system().jellyfin, &Jellyfin::auth_finished, this, [login_status](bool success, QString error) {
+        login_status->setText(success ? "Logged in" : error);
+    });
+
+    layout->addWidget(Session::Forge::br());
+
+    QPushButton *sync_button = new QPushButton("Sync favourites now", form);
+    connect(sync_button, &QPushButton::clicked, [this, sync_button] {
+        sync_button->setEnabled(false);
+        this->arbiter.system().jellyfin.sync_favorites();
+    });
+    connect(&this->arbiter.system().jellyfin, &Jellyfin::sync_finished, this, [sync_button](int, int) {
+        sync_button->setEnabled(true);
+    });
+    layout->addWidget(sync_button);
+
+    QLabel *sync_note = new QLabel("Favourites also sync automatically every 30 minutes", form);
+    sync_note->setAlignment(Qt::AlignCenter);
+    sync_note->setWordWrap(true);
+    layout->addWidget(sync_note);
+
+    outer->addWidget(form, 0, Qt::AlignHCenter);
 
     return widget;
 }

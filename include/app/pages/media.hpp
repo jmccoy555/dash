@@ -238,8 +238,6 @@ class JellyfinTab : public QWidget {
     DashcamVideoView *rear_video_widget;  // second view of the same video_scene - see RearDisplay
     QLabel *breadcrumb_label;
     QLabel *status_label;
-    QLineEdit *username_input;
-    QLineEdit *password_input;
 
     QList<Jellyfin::Item> nav_stack;      // breadcrumb trail (root not included)
     QList<Jellyfin::Item> current_items;  // whatever's currently listed - drives playlist build + prev/next
@@ -250,7 +248,6 @@ class JellyfinTab : public QWidget {
     QWidget *header_widget();
     QWidget *seek_widget();
     QWidget *controls_widget();
-    QWidget *settings_widget();
 };
 
 class YouTubeTab : public QWidget {
