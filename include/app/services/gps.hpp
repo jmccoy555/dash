@@ -3,6 +3,7 @@
 #include <QByteArray>
 #include <QObject>
 #include <QString>
+#include <QTimer>
 
 class Arbiter;
 class QTcpSocket;
@@ -44,6 +45,18 @@ class Gps : public QObject {
     bool enabled = true;
     QByteArray buffer;
     QString status_;  // human-readable, for a status label in Settings - "Not configured" / "Connecting…" / "Fix: 51.50740, -0.12780"
+
+    // Logging only - this class had zero log output at all until a "no
+    // speed in Waze" report turned into hours of guesswork with no way to
+    // check, after the fact, whether dash had actually been receiving GPS
+    // data during a given drive. logged_first_fix_ resets on every (re)
+    // connect so the log shows one line per fix-acquired event rather than
+    // one per second; last_fix_time_ backs a periodic heartbeat that catches
+    // the "socket still connected but data silently stopped arriving" case,
+    // which a plain connect/disconnect log wouldn't show at all.
+    bool logged_first_fix_ = false;
+    qint64 last_fix_time_ = 0;
+    QTimer heartbeat_;  // periodic silent-stall check - see last_fix_time_'s comment
 
    signals:
     void status_changed(QString status);

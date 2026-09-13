@@ -1,11 +1,13 @@
 #include <algorithm>
 
 #include <QApplication>
+#include <QDateTime>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QTcpSocket>
 #include <QTimer>
 
+#include "DashLog.hpp"
 #include "app/arbiter.hpp"
 #include "app/config.hpp"
 #include "app/services/gps.hpp"
@@ -30,6 +32,8 @@ Gps::Gps(Arbiter &arbiter)
         this->socket->write("?WATCH={\"enable\":true,\"json\":true}\r\n");
         this->status_ = "Connected, waiting for fix…";
         emit this->status_changed(this->status_);
+        this->logged_first_fix_ = false;
+        DASH_LOG(info) << "[Gps] connected to " << this->host.toStdString() << ":" << this->port << ", waiting for first fix";
     });
 
     connect(this->socket, &QTcpSocket::readyRead, this, [this] {
@@ -46,17 +50,37 @@ Gps::Gps(Arbiter &arbiter)
     connect(this->socket, &QTcpSocket::errorOccurred, this, [this](QAbstractSocket::SocketError) {
         this->status_ = "Connection failed: " + this->socket->errorString();
         emit this->status_changed(this->status_);
+        DASH_LOG(warning) << "[Gps] connection error: " << this->socket->errorString().toStdString();
     });
 
     connect(this->socket, &QTcpSocket::disconnected, this, [this] {
         this->status_ = "Disconnected - retrying…";
         emit this->status_changed(this->status_);
+        DASH_LOG(warning) << "[Gps] disconnected, retrying in 5s";
         // Stop feeding the last-known fix while disconnected - otherwise
         // Android Auto keeps seeing "live" updates from a source that's
         // actually gone stale, and never falls back to the phone's own GPS.
         this->arbiter.android_auto().handler->clearLocation();
         QTimer::singleShot(5000, this, [this] { this->connect_socket(); });
     });
+
+    // Periodic check for the "socket still connected but gpsd silently
+    // stopped sending fixes" case - a plain connect/disconnect log
+    // wouldn't show this at all, and it's indistinguishable from "working
+    // fine" without something actively watching the gap between fixes.
+    this->heartbeat_.setInterval(60000);
+    connect(&this->heartbeat_, &QTimer::timeout, this, [this] {
+        if (!this->enabled || this->socket->state() != QAbstractSocket::ConnectedState)
+            return;
+        if (this->last_fix_time_ == 0) {
+            DASH_LOG(warning) << "[Gps] connected but no fix received in the last 60s since connecting";
+        } else {
+            qint64 age_ms = QDateTime::currentMSecsSinceEpoch() - this->last_fix_time_;
+            if (age_ms > 60000)
+                DASH_LOG(warning) << "[Gps] connected but last fix was " << (age_ms / 1000) << "s ago";
+        }
+    });
+    this->heartbeat_.start();
 
     this->enabled = Config::get_instance()->get_gps_enabled();
     this->configure(Config::get_instance()->get_gps_host(), Config::get_instance()->get_gps_port());
@@ -127,6 +151,13 @@ void Gps::handle_line(QByteArray line)
 
     this->status_ = QString("Fix: %1, %2").arg(lat, 0, 'f', 5).arg(lon, 0, 'f', 5);
     emit this->status_changed(this->status_);
+
+    this->last_fix_time_ = QDateTime::currentMSecsSinceEpoch();
+    if (!this->logged_first_fix_) {
+        this->logged_first_fix_ = true;
+        DASH_LOG(info) << "[Gps] first fix acquired: " << lat << ", " << lon
+                        << " speed=" << speed << "m/s mode=" << mode;
+    }
 
     // Session::System is constructed before Session::AndroidAuto (see
     // session.hpp) - arbiter.android_auto() would be dangling if touched
