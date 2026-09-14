@@ -642,6 +642,11 @@ DabPlayerTab::DabPlayerTab(Arbiter &arbiter, QWidget *parent)
     // grouping that needs no extra data - welle-cli's own API only ever
     // gives this app a station's id and label, nothing like a genre.
     new QVBoxLayout(this->services_container);
+    // Zeroed on this and every grid_widget built in rebuild_services() -
+    // otherwise their default margins eat into the width tile_width_for_
+    // columns() already computed to exactly fill the viewport, leaving a
+    // few pixels of unwanted horizontal scroll (see conversation).
+    this->services_container->layout()->setContentsMargins(0, 0, 0, 0);
     this->services_area->setWidget(this->services_container);
     this->services_area->setWidgetResizable(true);
     this->services_area->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
@@ -789,6 +794,8 @@ void DabPlayerTab::rebuild_services(QList<DabService> services)
 
         QWidget *grid_widget = new QWidget(this->services_container);
         QGridLayout *grid = new QGridLayout(grid_widget);
+        grid->setContentsMargins(0, 0, 0, 0);
+        grid->setSpacing(8);  // matches columns_for_width()/tile_width_for_columns()'s spacing estimate exactly, instead of leaving it to the style's default
         int i = 0;
         for (const DabService &service : group.value()) {
             QPushButton *tile = this->service_tile(service, tile_width);
@@ -908,6 +915,8 @@ LocalPlayerTab::LocalPlayerTab(Arbiter &arbiter, QWidget *parent)
     this->arbiter.android_auto().handler->local_player = this->player;
 
     new QVBoxLayout(this->browser_container);
+    // See the equivalent comment on DabPlayerTab's services_container.
+    this->browser_container->layout()->setContentsMargins(0, 0, 0, 0);
     this->browser_area->setWidget(this->browser_container);
     this->browser_area->setWidgetResizable(true);
     this->browser_area->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
@@ -968,11 +977,16 @@ QWidget *LocalPlayerTab::header_widget()
     // sit at the top of the scrolling grid itself - that scrolled away
     // with the rest of the content instead of staying put like a real
     // back/menu control (see conversation). Hidden/disabled at the
-    // artist-grid root, where there's nowhere to go back to.
+    // artist-grid root, where there's nowhere to go back to. Deliberately
+    // bigger than the other header controls - it's the one you reach for
+    // most while driving, and it was still reading as too small even once
+    // it matched the others (see conversation - "back button needs to be
+    // much bigger").
+    int back_size = 88 * scale;
     this->back_button = new QPushButton(widget);
     this->back_button->setFlat(true);
-    this->back_button->setFixedSize(control_size, control_size);
-    this->arbiter.forge().iconize("arrow_left", this->back_button, 32);
+    this->back_button->setFixedSize(back_size, back_size);
+    this->arbiter.forge().iconize("arrow_left", this->back_button, 56);
     connect(this->back_button, &QPushButton::clicked, [this] { this->go_back(); });
     layout->addWidget(this->back_button);
 
@@ -1155,6 +1169,8 @@ void LocalPlayerTab::populate_search_results()
 
     QWidget *grid_widget = new QWidget(this->browser_container);
     QGridLayout *grid = new QGridLayout(grid_widget);
+    grid->setContentsMargins(0, 0, 0, 0);
+    grid->setSpacing(8);  // matches columns_for_width()/tile_width_for_columns()'s spacing estimate exactly, instead of leaving it to the style's default
     grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);
     const int columns = columns_for_width(this->browser_area, 180 * this->arbiter.layout().scale, 5);
     const int tile_width = tile_width_for_columns(this->browser_area, columns);
@@ -1298,6 +1314,8 @@ void LocalPlayerTab::populate_artists()
 
         QWidget *grid_widget = new QWidget(this->browser_container);
         QGridLayout *grid = new QGridLayout(grid_widget);
+        grid->setContentsMargins(0, 0, 0, 0);
+        grid->setSpacing(8);  // matches columns_for_width()/tile_width_for_columns()'s spacing estimate exactly, instead of leaving it to the style's default
         grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);
         int i = 0;
         for (const QString &artist : group.value()) {
@@ -1359,6 +1377,8 @@ void LocalPlayerTab::populate_albums(QString artist)
 
     QWidget *grid_widget = new QWidget(this->browser_container);
     QGridLayout *grid = new QGridLayout(grid_widget);
+    grid->setContentsMargins(0, 0, 0, 0);
+    grid->setSpacing(8);  // matches columns_for_width()/tile_width_for_columns()'s spacing estimate exactly, instead of leaving it to the style's default
     grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);
     const int columns = columns_for_width(this->browser_area, 180 * this->arbiter.layout().scale, 5);
     const int tile_width = tile_width_for_columns(this->browser_area, columns);
@@ -1661,6 +1681,8 @@ JellyfinTab::JellyfinTab(Arbiter &arbiter, QWidget *parent)
     this->status_label->setAlignment(Qt::AlignCenter);
 
     new QVBoxLayout(this->browser_container);
+    // See the equivalent comment on DabPlayerTab's services_container.
+    this->browser_container->layout()->setContentsMargins(0, 0, 0, 0);
     this->browser_area->setWidget(this->browser_container);
     this->browser_area->setWidgetResizable(true);
     this->browser_area->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
@@ -1805,6 +1827,7 @@ void JellyfinTab::populate(QList<Jellyfin::Item> items)
     if (!this->nav_stack.isEmpty()) {
         QWidget *back_widget = new QWidget(this->browser_container);
         QGridLayout *back_grid = new QGridLayout(back_widget);
+        back_grid->setContentsMargins(0, 0, 0, 0);
         QToolButton *up = this->arbiter.forge().media_tile("↲ Back", QString(), QPixmap(), tile_width);
         connect(up, &QToolButton::clicked, [this] { this->navigate(QString(), QString(), false); });
         back_grid->addWidget(up, 0, 0);
@@ -1836,6 +1859,8 @@ void JellyfinTab::populate(QList<Jellyfin::Item> items)
 
         QWidget *grid_widget = new QWidget(this->browser_container);
         QGridLayout *grid = new QGridLayout(grid_widget);
+        grid->setContentsMargins(0, 0, 0, 0);
+        grid->setSpacing(8);  // matches columns_for_width()/tile_width_for_columns()'s spacing estimate exactly, instead of leaving it to the style's default
         grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);  // top-anchors the grid within the scroll area - tiles themselves are already sized to tile_width_for_columns(), so there's no horizontal gap left within a full row for this to matter to
         int i = 0;
         for (int index : group.value()) {
@@ -2147,6 +2172,8 @@ YouTubeTab::YouTubeTab(Arbiter &arbiter, QWidget *parent)
     this->status_label->setAlignment(Qt::AlignCenter);
 
     new QVBoxLayout(this->results_container);
+    // See the equivalent comment on DabPlayerTab's services_container.
+    this->results_container->layout()->setContentsMargins(0, 0, 0, 0);
     this->results_area->setWidget(this->results_container);
     this->results_area->setWidgetResizable(true);
     this->results_area->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
@@ -2255,6 +2282,8 @@ void YouTubeTab::populate(QList<YouTube::Video> results)
 
     QWidget *grid_widget = new QWidget(this->results_container);
     QGridLayout *grid = new QGridLayout(grid_widget);
+    grid->setContentsMargins(0, 0, 0, 0);
+    grid->setSpacing(8);  // matches columns_for_width()/tile_width_for_columns()'s spacing estimate exactly, instead of leaving it to the style's default
     grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);  // see the equivalent comment in JellyfinTab::populate()
     const int columns = columns_for_width(this->results_area, 180 * this->arbiter.layout().scale, 5);
     const int tile_width = tile_width_for_columns(this->results_area, columns);
@@ -2467,6 +2496,8 @@ RecentTab::RecentTab(Arbiter &arbiter, QTabWidget *media_page, LocalPlayerTab *l
     , container(new QWidget(this->area))
 {
     new QVBoxLayout(this->container);
+    // See the equivalent comment on DabPlayerTab's services_container.
+    this->container->layout()->setContentsMargins(0, 0, 0, 0);
     this->area->setWidget(this->container);
     this->area->setWidgetResizable(true);
     this->area->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
@@ -2500,6 +2531,8 @@ void RecentTab::populate()
 
     QWidget *grid_widget = new QWidget(this->container);
     QGridLayout *grid = new QGridLayout(grid_widget);
+    grid->setContentsMargins(0, 0, 0, 0);
+    grid->setSpacing(8);  // matches columns_for_width()/tile_width_for_columns()'s spacing estimate exactly, instead of leaving it to the style's default
     grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);
     const int columns = columns_for_width(this->area, 180 * this->arbiter.layout().scale, 5);
     const int tile_width = tile_width_for_columns(this->area, columns);
