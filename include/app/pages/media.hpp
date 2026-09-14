@@ -138,7 +138,7 @@ class DabPlayerTab : public QWidget {
     void load_plugin();
     void refresh();
     void rebuild_services(QList<DabService> services);
-    QPushButton *service_tile(DabService service);
+    QPushButton *service_tile(DabService service, int width = 0);
     QWidget *dialog_body();
     QWidget *header_widget();
 };
@@ -184,7 +184,9 @@ class LocalPlayerTab : public QWidget {
     void search();
     void populate_search_results();
     void restore_view();  // whatever artist/album/track level was active before a search, used by "Clear search" and by resizes
-    QToolButton *build_track_tile(QString track_path, QString title, QStringList siblings, int index);
+    void go_back();  // header back button - steps up one level (track list -> albums -> artists), or clears a search
+    void update_back_button();  // shows/enables the header back button only when go_back() would actually do something
+    QToolButton *build_track_tile(QString track_path, QString title, QStringList siblings, int index, int width = 0);
     void play_track(QStringList siblings, int index, QString path, QString title);  // shared by build_track_tile() and build_track_row()
 
     void ensure_library_scanned();  // scans on first use, then just re-populates from the cached library
@@ -201,6 +203,7 @@ class LocalPlayerTab : public QWidget {
     QWidget *browser_container;  // the grid - rebuilt (cleared + repopulated) on every populate_*()/search(), same pattern as JellyfinTab
     QWidget *letter_index;       // A-Z jump strip alongside browser_area - only populated at the artist-grid root, same pattern as JellyfinTab/DabPlayerTab
     QLabel *path_label;
+    QPushButton *back_button;    // static in the header (unlike the old in-grid "Back" tile, which scrolled away with the content) - see go_back()/update_back_button()
     QPushButton *rescan_button;  // rescans the library index (e.g. after adding files over USB)
     QLineEdit *search_input;
     QString search_query;  // empty when not searching - set by search(), read by populate_search_results()

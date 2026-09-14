@@ -193,7 +193,13 @@ class Session {
         // local_pixmap and leave image_url empty). Blank placeholder stays
         // if neither is supplied. Returned unparented (caller adds it into
         // whatever grid/overlay layout it needs).
-        QToolButton *media_tile(QString title, QString image_url, QPixmap local_pixmap = QPixmap()) const;
+        // width <= 0 uses the original fixed 180*scale poster width; height
+        // and icon size scale proportionally with it so a caller filling a
+        // grid to the edge of the viewport (see columns_for_width() in
+        // media.cpp) gets a bigger tile rather than a fixed-size one with
+        // growing dead space around it (see conversation - "grow the tiles
+        // themselves").
+        QToolButton *media_tile(QString title, QString image_url, QPixmap local_pixmap = QPixmap(), int width = 0) const;
         QWidget *brightness_slider(bool buttons = true) const;
         QWidget *volume_slider(bool buttons = true) const;
 

@@ -340,15 +340,21 @@ QFont Session::Forge::font(int size, bool mono) const
     return QFont(name, scaled);
 }
 
-QToolButton *Session::Forge::media_tile(QString title, QString image_url, QPixmap local_pixmap) const
+QToolButton *Session::Forge::media_tile(QString title, QString image_url, QPixmap local_pixmap, int width) const
 {
     auto scale = this->arbiter_.layout().scale;
-    QSize icon_size(160 * scale, 160 * scale);
+    if (width <= 0)
+        width = 180 * scale;
+    // Same 180:210:160 width:height:icon-width proportions as the original
+    // fixed size, just scaled from whatever width the caller actually has
+    // room for.
+    int height = width * 210 / 180;
+    QSize icon_size(width * 160 / 180, width * 160 / 180);
 
     QToolButton *tile = new QToolButton();
     tile->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
     tile->setIconSize(icon_size);
-    tile->setFixedSize(180 * scale, 210 * scale);
+    tile->setFixedSize(width, height);
     tile->setText(title);
 
     if (!local_pixmap.isNull()) {

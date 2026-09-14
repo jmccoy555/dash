@@ -205,6 +205,23 @@ int columns_for_width(QScrollArea *area, int tile_width, int max_columns)
     return std::max(1, std::min(columns, max_columns));
 }
 
+// Companion to columns_for_width() - once the column count is decided,
+// this hands back the tile width that makes exactly that many columns
+// (plus the spacing between them) span the viewport edge to edge, instead
+// of tiles staying their original fixed size and leaving a gap down the
+// right side when the viewport width isn't an exact multiple of
+// (tile_width + spacing) (see conversation - "grow the tiles themselves").
+// Same spacing estimate as columns_for_width() for the same reason - the
+// grid doesn't exist yet either.
+int tile_width_for_columns(QScrollArea *area, int columns)
+{
+    const int spacing = 8;
+    int available = area->viewport()->width();
+    if (columns <= 0 || available <= 0)
+        return 0;
+    return (available - spacing * (columns - 1)) / columns;
+}
+
 }
 
 void ClickableSlider::mousePressEvent(QMouseEvent *event)
@@ -665,6 +682,20 @@ DabPlayerTab::DabPlayerTab(Arbiter &arbiter, QWidget *parent)
     layout->addWidget(services_row, 1);
     layout->addWidget(this->stop_button, 0, Qt::AlignCenter);
 
+    // Backstop for the same "still 1 column" issue described on
+    // ResizeWatcher itself (this tab's very first rebuild, triggered by
+    // refresh()'s signature check once scanning turns up stations, can
+    // land before kwin_x11 has finished its fullscreen transition) - every
+    // other media tab's grid already has this same watcher; this one was
+    // simply missed (see conversation - "DAB menu is back to a single
+    // column"). Re-fetches directly from the plugin rather than replaying
+    // the last rebuild's services list, since none is kept around outside
+    // refresh()'s own scope.
+    new ResizeWatcher(this->services_area->viewport(), [this] {
+        if (DabPlugin *plugin = qobject_cast<DabPlugin *>(this->loader.instance()))
+            this->rebuild_services(plugin->services());
+    }, this);
+
     this->load_plugin();
 }
 
@@ -750,6 +781,7 @@ void DabPlayerTab::rebuild_services(QList<DabService> services)
     }
 
     const int columns = columns_for_width(this->services_area, 340, 5);
+    const int tile_width = tile_width_for_columns(this->services_area, columns);
     for (auto group = groups.constBegin(); group != groups.constEnd(); ++group) {
         QLabel *header = new QLabel(group.key(), this->services_container);
         header->setFont(this->arbiter.forge().font(20));
@@ -759,7 +791,7 @@ void DabPlayerTab::rebuild_services(QList<DabService> services)
         QGridLayout *grid = new QGridLayout(grid_widget);
         int i = 0;
         for (const DabService &service : group.value()) {
-            QPushButton *tile = this->service_tile(service);
+            QPushButton *tile = this->service_tile(service, tile_width);
             grid->addWidget(tile, i / columns, i % columns);
             this->tiles[service.id] = tile;
             i++;
@@ -777,11 +809,16 @@ void DabPlayerTab::rebuild_services(QList<DabService> services)
     static_cast<QVBoxLayout *>(container_layout)->addStretch();
 }
 
-QPushButton *DabPlayerTab::service_tile(DabService service)
+QPushButton *DabPlayerTab::service_tile(DabService service, int width)
 {
     QPushButton *tile = new QPushButton(service.label, this->services_container);
     tile->setCheckable(true);
-    tile->setFixedSize(340, 100);
+    // Same 340:100 width:height proportions as the original fixed size,
+    // just scaled from whatever width the row actually has room for (see
+    // tile_width_for_columns()).
+    if (width <= 0)
+        width = 340;
+    tile->setFixedSize(width, width * 100 / 340);
     tile->setFont(this->arbiter.forge().font(16));
 
     QString id = service.id;
@@ -855,6 +892,7 @@ LocalPlayerTab::LocalPlayerTab(Arbiter &arbiter, QWidget *parent)
     , browser_container(new QWidget(this->browser_area))
     , letter_index(new QWidget(this))
     , path_label(new QLabel(this))
+    , back_button(nullptr)
     , rescan_button(nullptr)
     , search_input(nullptr)
 {
@@ -918,9 +956,30 @@ QWidget *LocalPlayerTab::header_widget()
     QWidget *widget = new QWidget(this);
     QHBoxLayout *layout = new QHBoxLayout(widget);
 
+    // Every control in this row shares one fixed height (matching the
+    // search box, previously the only thing in this row with real size)
+    // so the row reads as one aligned group instead of a few small flat
+    // icons drifting next to one oversized input (see conversation -
+    // "all need aligning and making bigger to match the search box").
+    auto scale = this->arbiter.layout().scale;
+    int control_size = 56 * scale;
+
+    // Static in the header rather than the old "↲ Back" tile that used to
+    // sit at the top of the scrolling grid itself - that scrolled away
+    // with the rest of the content instead of staying put like a real
+    // back/menu control (see conversation). Hidden/disabled at the
+    // artist-grid root, where there's nowhere to go back to.
+    this->back_button = new QPushButton(widget);
+    this->back_button->setFlat(true);
+    this->back_button->setFixedSize(control_size, control_size);
+    this->arbiter.forge().iconize("arrow_left", this->back_button, 32);
+    connect(this->back_button, &QPushButton::clicked, [this] { this->go_back(); });
+    layout->addWidget(this->back_button);
+
     this->rescan_button = new QPushButton(widget);
     this->rescan_button->setFlat(true);
-    this->arbiter.forge().iconize("refresh", this->rescan_button, 24);
+    this->rescan_button->setFixedSize(control_size, control_size);
+    this->arbiter.forge().iconize("refresh", this->rescan_button, 32);
     connect(this->rescan_button, &QPushButton::clicked, [this] {
         this->library_loaded = false;
         this->ensure_library_scanned();
@@ -932,7 +991,8 @@ QWidget *LocalPlayerTab::header_widget()
     // entry point that isn't scoped to wherever browsing happens to be.
     QPushButton *shuffle_all_button = new QPushButton(widget);
     shuffle_all_button->setFlat(true);
-    this->arbiter.forge().iconize("shuffle", shuffle_all_button, 24);
+    shuffle_all_button->setFixedSize(control_size, control_size);
+    this->arbiter.forge().iconize("shuffle", shuffle_all_button, 32);
     connect(shuffle_all_button, &QPushButton::clicked, [this] { this->shuffle_all(); });
     layout->addWidget(shuffle_all_button);
 
@@ -944,22 +1004,50 @@ QWidget *LocalPlayerTab::header_widget()
     this->search_input->setFont(this->arbiter.forge().font(16));
     this->search_input->setAlignment(Qt::AlignCenter);
     this->search_input->setPlaceholderText("Search Local");
-    this->search_input->setFixedWidth(300 * this->arbiter.layout().scale);
+    this->search_input->setFixedSize(300 * scale, control_size);
     connect(this->search_input, &QLineEdit::returnPressed, [this] { this->search(); });
     layout->addWidget(this->search_input);
 
     QPushButton *search_button = new QPushButton(widget);
     search_button->setFlat(true);
-    this->arbiter.forge().iconize("search", search_button, 24);
+    search_button->setFixedSize(control_size, control_size);
+    this->arbiter.forge().iconize("search", search_button, 32);
     connect(search_button, &QPushButton::clicked, [this] { this->search(); });
     layout->addWidget(search_button);
+
+    this->update_back_button();
 
     return widget;
 }
 
-QToolButton *LocalPlayerTab::build_track_tile(QString track_path, QString title, QStringList siblings, int index)
+// go_back() steps out of whatever's currently shown one level at a time -
+// a search first (same as "Clear search"), then a track list back to its
+// album grid, then an album grid back to the artist grid root. Mirrors
+// restore_view()'s own current_artist/current_album reading.
+void LocalPlayerTab::go_back()
 {
-    QToolButton *tile = this->arbiter.forge().media_tile(title, QString(), local_track_art(track_path));
+    if (!this->search_query.isEmpty()) {
+        this->search_query.clear();
+        this->search_input->clear();
+        this->restore_view();
+        return;
+    }
+    if (!this->current_album.isEmpty())
+        this->populate_albums(this->current_artist);
+    else if (!this->current_artist.isEmpty())
+        this->populate_artists();
+}
+
+void LocalPlayerTab::update_back_button()
+{
+    bool can_go_back = !this->search_query.isEmpty() || !this->current_artist.isEmpty();
+    this->back_button->setEnabled(can_go_back);
+    this->back_button->setVisible(can_go_back);
+}
+
+QToolButton *LocalPlayerTab::build_track_tile(QString track_path, QString title, QStringList siblings, int index, int width)
+{
+    QToolButton *tile = this->arbiter.forge().media_tile(title, QString(), local_track_art(track_path), width);
     tile->setCheckable(true);
     tile->setChecked(this->player->playlist()->currentMedia().canonicalUrl().toLocalFile() == track_path);
     this->track_tiles[track_path] = tile;
@@ -1042,6 +1130,7 @@ void LocalPlayerTab::populate_search_results()
     }
 
     this->path_label->setText(QString("Search: \"%1\"").arg(this->search_query));
+    this->update_back_button();
 
     // Filters the already tag-scanned library (title, artist, or album) -
     // matches on real metadata rather than on-disk filenames, and searching
@@ -1068,9 +1157,10 @@ void LocalPlayerTab::populate_search_results()
     QGridLayout *grid = new QGridLayout(grid_widget);
     grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);
     const int columns = columns_for_width(this->browser_area, 180 * this->arbiter.layout().scale, 5);
+    const int tile_width = tile_width_for_columns(this->browser_area, columns);
     int i = 0;
 
-    QToolButton *clear = this->arbiter.forge().media_tile("✕ Clear search", QString());
+    QToolButton *clear = this->arbiter.forge().media_tile("✕ Clear search", QString(), QPixmap(), tile_width);
     connect(clear, &QToolButton::clicked, [this] {
         this->search_query.clear();
         this->search_input->clear();
@@ -1080,7 +1170,7 @@ void LocalPlayerTab::populate_search_results()
     i++;
 
     for (int t = 0; t < matches.size(); t++) {
-        QToolButton *tile = this->build_track_tile(matches[t].path, matches[t].title, track_paths, t);
+        QToolButton *tile = this->build_track_tile(matches[t].path, matches[t].title, track_paths, t, tile_width);
         grid->addWidget(tile, i / columns, i % columns);
         i++;
     }
@@ -1159,6 +1249,7 @@ void LocalPlayerTab::populate_artists()
     this->current_artist.clear();
     this->current_album.clear();
     this->path_label->setText("Music");
+    this->update_back_button();
 
     this->track_tiles.clear();
     QLayout *container_layout = this->browser_container->layout();
@@ -1199,6 +1290,7 @@ void LocalPlayerTab::populate_artists()
     }
 
     const int columns = columns_for_width(this->browser_area, 180 * this->arbiter.layout().scale, 5);
+    const int tile_width = tile_width_for_columns(this->browser_area, columns);
     for (auto group = groups.constBegin(); group != groups.constEnd(); ++group) {
         QLabel *header = new QLabel(group.key(), this->browser_container);
         header->setFont(this->arbiter.forge().font(20));
@@ -1209,7 +1301,7 @@ void LocalPlayerTab::populate_artists()
         grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);
         int i = 0;
         for (const QString &artist : group.value()) {
-            QToolButton *tile = this->arbiter.forge().media_tile(artist, QString(), local_track_art(artist_art[artist]));
+            QToolButton *tile = this->arbiter.forge().media_tile(artist, QString(), local_track_art(artist_art[artist]), tile_width);
             connect(tile, &QToolButton::clicked, [this, artist] { this->populate_albums(artist); });
             grid->addWidget(tile, i / columns, i % columns);
             i++;
@@ -1232,6 +1324,7 @@ void LocalPlayerTab::populate_albums(QString artist)
     this->current_artist = artist;
     this->current_album.clear();
     this->path_label->setText(QString("Music › %1").arg(artist));
+    this->update_back_button();
 
     this->track_tiles.clear();
     QLayout *container_layout = this->browser_container->layout();
@@ -1247,13 +1340,6 @@ void LocalPlayerTab::populate_albums(QString artist)
         delete index_child->widget();
         delete index_child;
     }
-
-    QWidget *back_widget = new QWidget(this->browser_container);
-    QGridLayout *back_grid = new QGridLayout(back_widget);
-    QToolButton *up = this->arbiter.forge().media_tile("↲ Back", QString());
-    connect(up, &QToolButton::clicked, [this] { this->populate_artists(); });
-    back_grid->addWidget(up, 0, 0);
-    container_layout->addWidget(back_widget);
 
     // One representative track per album, for the same reason as above -
     // stands in for cover art no other local source provides.
@@ -1275,9 +1361,10 @@ void LocalPlayerTab::populate_albums(QString artist)
     QGridLayout *grid = new QGridLayout(grid_widget);
     grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);
     const int columns = columns_for_width(this->browser_area, 180 * this->arbiter.layout().scale, 5);
+    const int tile_width = tile_width_for_columns(this->browser_area, columns);
     int i = 0;
     for (const QString &album : albums) {
-        QToolButton *tile = this->arbiter.forge().media_tile(album, QString(), local_track_art(album_art[album]));
+        QToolButton *tile = this->arbiter.forge().media_tile(album, QString(), local_track_art(album_art[album]), tile_width);
         connect(tile, &QToolButton::clicked, [this, artist, album] { this->populate_tracks(artist, album); });
         grid->addWidget(tile, i / columns, i % columns);
         i++;
@@ -1291,6 +1378,7 @@ void LocalPlayerTab::populate_tracks(QString artist, QString album)
     this->current_artist = artist;
     this->current_album = album;
     this->path_label->setText(QString("Music › %1 › %2").arg(artist, album));
+    this->update_back_button();
 
     this->track_tiles.clear();
     QLayout *container_layout = this->browser_container->layout();
@@ -1306,13 +1394,6 @@ void LocalPlayerTab::populate_tracks(QString artist, QString album)
         delete index_child->widget();
         delete index_child;
     }
-
-    QWidget *back_widget = new QWidget(this->browser_container);
-    QGridLayout *back_grid = new QGridLayout(back_widget);
-    QToolButton *up = this->arbiter.forge().media_tile("↲ Back", QString());
-    connect(up, &QToolButton::clicked, [this, artist] { this->populate_albums(artist); });
-    back_grid->addWidget(up, 0, 0);
-    container_layout->addWidget(back_widget);
 
     QList<LocalTrack> tracks;
     for (const LocalTrack &track : this->library)
@@ -1719,11 +1800,12 @@ void JellyfinTab::populate(QList<Jellyfin::Item> items)
     }
 
     const int columns = columns_for_width(this->browser_area, 180 * this->arbiter.layout().scale, 5);
+    const int tile_width = tile_width_for_columns(this->browser_area, columns);
 
     if (!this->nav_stack.isEmpty()) {
         QWidget *back_widget = new QWidget(this->browser_container);
         QGridLayout *back_grid = new QGridLayout(back_widget);
-        QToolButton *up = this->arbiter.forge().media_tile("↲ Back", QString());
+        QToolButton *up = this->arbiter.forge().media_tile("↲ Back", QString(), QPixmap(), tile_width);
         connect(up, &QToolButton::clicked, [this] { this->navigate(QString(), QString(), false); });
         back_grid->addWidget(up, 0, 0);
         container_layout->addWidget(back_widget);
@@ -1754,12 +1836,12 @@ void JellyfinTab::populate(QList<Jellyfin::Item> items)
 
         QWidget *grid_widget = new QWidget(this->browser_container);
         QGridLayout *grid = new QGridLayout(grid_widget);
-        grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);  // media_tile()'s poster-shaped tiles are narrower than the content area can fill edge-to-edge - pack left rather than stretching big gaps between columns
+        grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);  // top-anchors the grid within the scroll area - tiles themselves are already sized to tile_width_for_columns(), so there's no horizontal gap left within a full row for this to matter to
         int i = 0;
         for (int index : group.value()) {
             const Jellyfin::Item &item = items[index];
 
-            QToolButton *tile = this->arbiter.forge().media_tile(item.name, this->arbiter.system().jellyfin.image_url(item.id).toString());
+            QToolButton *tile = this->arbiter.forge().media_tile(item.name, this->arbiter.system().jellyfin.image_url(item.id).toString(), QPixmap(), tile_width);
 
             if (item.type == Jellyfin::ItemType::Container) {
                 connect(tile, &QToolButton::clicked, [this, item] { this->navigate(item.id, item.name, true); });
@@ -2175,6 +2257,7 @@ void YouTubeTab::populate(QList<YouTube::Video> results)
     QGridLayout *grid = new QGridLayout(grid_widget);
     grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);  // see the equivalent comment in JellyfinTab::populate()
     const int columns = columns_for_width(this->results_area, 180 * this->arbiter.layout().scale, 5);
+    const int tile_width = tile_width_for_columns(this->results_area, columns);
 
     for (int i = 0; i < results.size(); i++) {
         const YouTube::Video &video = results[i];
@@ -2187,7 +2270,7 @@ void YouTubeTab::populate(QList<YouTube::Video> results)
         // thumbnail URL that exists for every video regardless of what
         // yt-dlp's search response happens to report - no need to depend on
         // its thumbnails array.
-        QToolButton *tile = this->arbiter.forge().media_tile(text, QString("https://i.ytimg.com/vi/%1/mqdefault.jpg").arg(video.id));
+        QToolButton *tile = this->arbiter.forge().media_tile(text, QString("https://i.ytimg.com/vi/%1/mqdefault.jpg").arg(video.id), QPixmap(), tile_width);
         connect(tile, &QToolButton::clicked, [this, i] { this->play_from(i); });
 
         // Star overlays the tile's top-right corner - see the equivalent
@@ -2419,6 +2502,7 @@ void RecentTab::populate()
     QGridLayout *grid = new QGridLayout(grid_widget);
     grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);
     const int columns = columns_for_width(this->area, 180 * this->arbiter.layout().scale, 5);
+    const int tile_width = tile_width_for_columns(this->area, columns);
     int i = 0;
 
     const QList<RecentlyPlayed::Entry> &entries = this->arbiter.system().recently_played.entries();
@@ -2427,7 +2511,7 @@ void RecentTab::populate()
         if (entry.source == "Local")
             local_pixmap = local_track_art(entry.id);
 
-        QToolButton *tile = this->arbiter.forge().media_tile(entry.title, entry.image_url, local_pixmap);
+        QToolButton *tile = this->arbiter.forge().media_tile(entry.title, entry.image_url, local_pixmap, tile_width);
         connect(tile, &QToolButton::clicked, [this, entry] { this->play(entry); });
         grid->addWidget(tile, i / columns, i % columns);
         i++;
